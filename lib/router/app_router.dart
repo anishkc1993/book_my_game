@@ -6,6 +6,7 @@ import '../features/auth/presentation/pages/home_page.dart';
 import '../features/auth/presentation/pages/otp_verification_page.dart';
 import '../features/auth/presentation/pages/phone_input_page.dart';
 import '../features/auth/presentation/providers/auth_provider.dart';
+import '../features/analytics/presentation/pages/admin_analytics_page.dart';
 import '../features/booking/presentation/pages/admin_booking_page.dart';
 import '../features/booking/presentation/pages/booking_page.dart';
 import '../features/booking/presentation/pages/slot_management_page.dart';
@@ -99,6 +100,11 @@ class AppRouter {
           path: RoutePaths.slotManagement,
           name: RouteNames.slotManagement,
           builder: (context, state) => const SlotManagementPage(),
+        ),
+        GoRoute(
+          path: RoutePaths.adminAnalytics,
+          name: RouteNames.adminAnalytics,
+          builder: (context, state) => const AdminAnalyticsPage(),
         ),
       ];
 }

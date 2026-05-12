@@ -27,6 +27,7 @@ class RouteNames {
   static const String adminBooking = 'admin-booking';
   static const String leaderboard = 'leaderboard';
   static const String slotManagement = 'slot-management';
+  static const String adminAnalytics = 'admin-analytics';
 }
 
 class RoutePaths {
@@ -38,4 +39,5 @@ class RoutePaths {
   static const String adminBooking = '/admin/booking';
   static const String leaderboard = '/admin/leaderboard';
   static const String slotManagement = '/admin/slots';
+  static const String adminAnalytics = '/admin/analytics';
 }

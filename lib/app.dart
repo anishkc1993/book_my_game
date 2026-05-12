@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import 'core/constants/app_constants.dart';
 import 'core/theme/theme_provider.dart';
+import 'features/analytics/presentation/providers/analytics_provider.dart';
 import 'features/auth/presentation/providers/auth_provider.dart';
 import 'features/booking/presentation/providers/booking_provider.dart';
 import 'features/leaderboard/presentation/providers/leaderboard_provider.dart';
@@ -26,6 +27,9 @@ class BookMyGameApp extends StatelessWidget {
         ),
         ChangeNotifierProvider<LeaderboardProvider>.value(
           value: injector.leaderboardProvider,
+        ),
+        ChangeNotifierProvider<AnalyticsProvider>.value(
+          value: injector.analyticsProvider,
         ),
       ],
       child: Consumer<ThemeProvider>(

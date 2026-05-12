@@ -232,6 +232,21 @@ class HomePage extends StatelessWidget {
                                 },
                               ),
                             ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _ActionCard(
+                                icon: Icons.analytics_rounded,
+                                label: 'Analytics',
+                                color: Colors.teal,
+                                onTap: () {
+                                  context.push(RoutePaths.adminAnalytics);
+                                },
+                              ),
+                            ),
                             const SizedBox(width: 12),
                             Expanded(
                               child: _ActionCard(

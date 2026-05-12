@@ -3,6 +3,10 @@ import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/theme/theme_provider.dart';
+import 'features/analytics/data/datasources/analytics_remote_datasource.dart';
+import 'features/analytics/data/repositories/analytics_repository_impl.dart';
+import 'features/analytics/domain/repositories/analytics_repository.dart';
+import 'features/analytics/presentation/providers/analytics_provider.dart';
 import 'features/auth/data/datasources/auth_remote_datasource.dart';
 import 'features/auth/data/repositories/auth_repository_impl.dart';
 import 'features/auth/domain/repositories/auth_repository.dart';
@@ -51,6 +55,11 @@ class InjectionContainer {
   late final LeaderboardRemoteDataSource _leaderboardRemoteDataSource;
   late final LeaderboardRepository _leaderboardRepository;
   late final LeaderboardProvider leaderboardProvider;
+
+  // Analytics
+  late final AnalyticsRemoteDataSource _analyticsRemoteDataSource;
+  late final AnalyticsRepository _analyticsRepository;
+  late final AnalyticsProvider analyticsProvider;
 
   Future<void> init() async {
     // External dependencies
@@ -114,6 +123,21 @@ class InjectionContainer {
     // Leaderboard provider
     leaderboardProvider = LeaderboardProvider(
       repository: _leaderboardRepository,
+    );
+
+    // Analytics data sources
+    _analyticsRemoteDataSource = AnalyticsRemoteDataSourceImpl(
+      firestore: _firestore,
+    );
+
+    // Analytics repositories
+    _analyticsRepository = AnalyticsRepositoryImpl(
+      remoteDataSource: _analyticsRemoteDataSource,
+    );
+
+    // Analytics provider
+    analyticsProvider = AnalyticsProvider(
+      repository: _analyticsRepository,
     );
 
     // Router
