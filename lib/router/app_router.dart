@@ -1,7 +1,13 @@
+import 'dart:async';
+
+import 'package:app_links/app_links.dart';
+import 'package:firebase_auth/firebase_auth.dart' hide AuthProvider;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/constants/app_constants.dart';
+import '../features/auth/presentation/pages/email_input_page.dart';
 import '../features/auth/presentation/pages/home_page.dart';
 import '../features/auth/presentation/pages/otp_verification_page.dart';
 import '../features/auth/presentation/pages/phone_input_page.dart';
@@ -9,13 +15,48 @@ import '../features/auth/presentation/providers/auth_provider.dart';
 import '../features/analytics/presentation/pages/admin_analytics_page.dart';
 import '../features/booking/presentation/pages/admin_booking_page.dart';
 import '../features/booking/presentation/pages/booking_page.dart';
+import '../features/booking/presentation/pages/regular_bookings_page.dart';
 import '../features/booking/presentation/pages/slot_management_page.dart';
+import '../features/turf/presentation/pages/turf_selection_page.dart';
+import '../features/turf/presentation/pages/venue_location_page.dart';
 import '../features/leaderboard/presentation/pages/leaderboard_page.dart';
 
 class AppRouter {
   final AuthProvider authProvider;
 
-  AppRouter({required this.authProvider});
+  AppRouter({required this.authProvider}) {
+    _initDeepLinks();
+  }
+
+  final _appLinks = AppLinks();
+  StreamSubscription<Uri>? _linkSubscription;
+
+  void _initDeepLinks() async {
+    try {
+      final initialLink = await _appLinks.getInitialLinkString();
+      if (initialLink != null) {
+        _handleIncomingLink(initialLink);
+      }
+    } catch (e) {
+      debugPrint('AppRouter: error reading initial link: $e');
+    }
+
+    _linkSubscription = _appLinks.uriLinkStream.listen(
+      (uri) => _handleIncomingLink(uri.toString()),
+      onError: (e) => debugPrint('AppRouter: deep link stream error: $e'),
+    );
+  }
+
+  void _handleIncomingLink(String link) {
+    if (FirebaseAuth.instance.isSignInWithEmailLink(link)) {
+      debugPrint('AppRouter: Firebase email link received');
+      authProvider.handleEmailLink(link);
+    }
+  }
+
+  void dispose() {
+    _linkSubscription?.cancel();
+  }
 
   late final GoRouter router = GoRouter(
     initialLocation: RoutePaths.splash,
@@ -38,13 +79,10 @@ class AppRouter {
       RoutePaths.splash,
       RoutePaths.phoneInput,
       RoutePaths.otpVerification,
+      RoutePaths.emailInput,
     ];
 
     final isOnAuthRoute = authRoutes.contains(currentPath);
-
-    if (isAuthenticated && isOnAuthRoute) {
-      return RoutePaths.home;
-    }
 
     if (!isAuthenticated && !isOnAuthRoute) {
       return RoutePaths.phoneInput;
@@ -52,6 +90,25 @@ class AppRouter {
 
     if (!isAuthenticated && currentPath == RoutePaths.splash) {
       return RoutePaths.phoneInput;
+    }
+
+    if (isAuthenticated) {
+      final user = authProvider.user;
+      // After auth, any user without a turfId must pick one (admins are
+      // auto-linked by phone in the data source; if that didn't find a turf,
+      // we still route them here — they can contact support to be set up).
+      final needsTurf = user != null && !user.hasTurf;
+      final isOnSelectTurf = currentPath == RoutePaths.selectTurf;
+
+      if (isOnAuthRoute) {
+        return needsTurf ? RoutePaths.selectTurf : RoutePaths.home;
+      }
+      if (needsTurf && !isOnSelectTurf) {
+        return RoutePaths.selectTurf;
+      }
+      if (!needsTurf && isOnSelectTurf) {
+        return RoutePaths.home;
+      }
     }
 
     return null;
@@ -75,6 +132,11 @@ class AppRouter {
             final phoneNumber = state.extra as String? ?? '';
             return OtpVerificationPage(phoneNumber: phoneNumber);
           },
+        ),
+        GoRoute(
+          path: RoutePaths.emailInput,
+          name: RouteNames.emailInput,
+          builder: (context, state) => const EmailInputPage(),
         ),
         GoRoute(
           path: RoutePaths.home,
@@ -105,6 +167,21 @@ class AppRouter {
           path: RoutePaths.adminAnalytics,
           name: RouteNames.adminAnalytics,
           builder: (context, state) => const AdminAnalyticsPage(),
+        ),
+        GoRoute(
+          path: RoutePaths.regularBookings,
+          name: RouteNames.regularBookings,
+          builder: (context, state) => const RegularBookingsPage(),
+        ),
+        GoRoute(
+          path: RoutePaths.selectTurf,
+          name: RouteNames.selectTurf,
+          builder: (context, state) => const TurfSelectionPage(),
+        ),
+        GoRoute(
+          path: RoutePaths.venueLocation,
+          name: RouteNames.venueLocation,
+          builder: (context, state) => const VenueLocationPage(),
         ),
       ];
 }

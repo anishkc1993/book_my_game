@@ -6,7 +6,10 @@ import '../../../../core/errors/exceptions.dart';
 import '../models/leaderboard_entry_model.dart';
 
 abstract class LeaderboardRemoteDataSource {
-  Future<List<LeaderboardEntryModel>> getMonthlyLeaderboard({bool forceRefresh = false});
+  Future<List<LeaderboardEntryModel>> getMonthlyLeaderboard({
+    required String turfId,
+    bool forceRefresh = false,
+  });
   Future<DateTime> getLastUpdateTime();
 }
 
@@ -44,33 +47,35 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
   }
 
   @override
-  Future<List<LeaderboardEntryModel>> getMonthlyLeaderboard({bool forceRefresh = false}) async {
+  Future<List<LeaderboardEntryModel>> getMonthlyLeaderboard({
+    required String turfId,
+    bool forceRefresh = false,
+  }) async {
     try {
       final now = DateTime.now();
       final currentMonthKey = _getMonthKey(now);
+      // Cache key includes turfId so different turfs don't clobber each other.
+      final cacheKey = '${turfId}_$currentMonthKey';
       final cachedMonthKey = _prefs.getString(_monthKeyPref);
 
-      debugPrint('🏆 getMonthlyLeaderboard: Current month $currentMonthKey, cached $cachedMonthKey');
+      debugPrint('🏆 getMonthlyLeaderboard: turf=$turfId month=$currentMonthKey, cached=$cachedMonthKey');
 
-      // Check if we need to refresh (new month or force refresh)
-      final needsRefresh = forceRefresh || cachedMonthKey != currentMonthKey;
+      // Check if we need to refresh (new month, new turf, or force refresh)
+      final needsRefresh = forceRefresh || cachedMonthKey != cacheKey;
 
       if (!needsRefresh) {
-        // Try to get cached leaderboard from Firestore
-        final cachedData = await _getCachedLeaderboard(currentMonthKey);
+        final cachedData = await _getCachedLeaderboard(cacheKey);
         if (cachedData.isNotEmpty) {
-          debugPrint('🏆 getMonthlyLeaderboard: Returning cached data (${cachedData.length} entries)');
+          debugPrint('🏆 getMonthlyLeaderboard: Cached (${cachedData.length})');
           return cachedData;
         }
       }
 
-      // Calculate fresh leaderboard
-      debugPrint('🏆 getMonthlyLeaderboard: Calculating fresh leaderboard');
-      final leaderboard = await _calculateLeaderboard(now);
+      debugPrint('🏆 getMonthlyLeaderboard: Calculating fresh');
+      final leaderboard = await _calculateLeaderboard(turfId, now);
 
-      // Cache the results
-      await _cacheLeaderboard(leaderboard, currentMonthKey);
-      await _prefs.setString(_monthKeyPref, currentMonthKey);
+      await _cacheLeaderboard(leaderboard, cacheKey);
+      await _prefs.setString(_monthKeyPref, cacheKey);
       await _prefs.setString(_lastUpdateKey, now.toIso8601String());
 
       return leaderboard;
@@ -80,11 +85,11 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
     }
   }
 
-  Future<List<LeaderboardEntryModel>> _getCachedLeaderboard(String monthKey) async {
+  Future<List<LeaderboardEntryModel>> _getCachedLeaderboard(String cacheKey) async {
     try {
       final snapshot = await _firestore
           .collection(_leaderboardCollection)
-          .doc(monthKey)
+          .doc(cacheKey)
           .collection('entries')
           .orderBy('rank')
           .limit(20)
@@ -99,15 +104,18 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
     }
   }
 
-  Future<List<LeaderboardEntryModel>> _calculateLeaderboard(DateTime now) async {
+  Future<List<LeaderboardEntryModel>> _calculateLeaderboard(
+      String turfId, DateTime now) async {
     final monthStart = _getMonthStart(now);
     final monthEnd = _getMonthEnd(now);
 
-    debugPrint('🏆 Calculating leaderboard for $monthStart to $monthEnd');
+    debugPrint('🏆 Calculating leaderboard for turf=$turfId $monthStart to $monthEnd');
 
-    // Fetch all confirmed/completed bookings for the month
+    // Fetch all bookings at this turf for the month. The turfId filter is
+    // required by Firestore rules under multi-tenant.
     final snapshot = await _firestore
         .collection(_bookingsCollection)
+        .where('turfId', isEqualTo: turfId)
         .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(monthStart))
         .where('date', isLessThanOrEqualTo: Timestamp.fromDate(monthEnd))
         .get();
@@ -166,14 +174,14 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
     return leaderboard;
   }
 
-  Future<void> _cacheLeaderboard(List<LeaderboardEntryModel> entries, String monthKey) async {
+  Future<void> _cacheLeaderboard(List<LeaderboardEntryModel> entries, String cacheKey) async {
     try {
       final batch = _firestore.batch();
-      final monthDoc = _firestore.collection(_leaderboardCollection).doc(monthKey);
+      final monthDoc = _firestore.collection(_leaderboardCollection).doc(cacheKey);
 
       // Set month metadata
       batch.set(monthDoc, {
-        'monthKey': monthKey,
+        'cacheKey': cacheKey,
         'updatedAt': FieldValue.serverTimestamp(),
         'entryCount': entries.length,
       });
@@ -191,7 +199,7 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
       }
 
       await batch.commit();
-      debugPrint('🏆 Cached ${entries.length} leaderboard entries for $monthKey');
+      debugPrint('🏆 Cached ${entries.length} leaderboard entries for $cacheKey');
     } catch (e) {
       debugPrint('⚠️ _cacheLeaderboard: Failed to cache - $e');
       // Non-fatal, leaderboard still works without caching

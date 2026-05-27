@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../../../../core/theme/app_theme.dart';
 import '../providers/leaderboard_provider.dart';
 
 class LeaderboardPage extends StatefulWidget {
@@ -23,209 +24,225 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
+    final cs = theme.colorScheme;
 
     return Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          onPressed: () => context.pop(),
-          icon: const Icon(Icons.arrow_back_rounded),
-        ),
-        title: const Text('Monthly Leaderboard'),
-        centerTitle: true,
-        actions: [
-          Consumer<LeaderboardProvider>(
-            builder: (context, provider, _) {
-              return IconButton(
-                onPressed: provider.state == LeaderboardState.loading
-                    ? null
-                    : () => provider.refresh(),
-                icon: provider.state == LeaderboardState.loading
-                    ? SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: colorScheme.onSurface,
+      body: SafeArea(
+        child: Consumer<LeaderboardProvider>(
+          builder: (context, provider, _) {
+            return CustomScrollView(
+              slivers: [
+                // Header
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                    child: Row(
+                      children: [
+                        GestureDetector(
+                          onTap: () => context.pop(),
+                          child: Container(
+                            padding: const EdgeInsets.all(9),
+                            decoration: BoxDecoration(
+                              color: cs.surfaceContainerLow,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: cs.outlineVariant),
+                            ),
+                            child: Icon(Icons.arrow_back_rounded,
+                                size: 18, color: cs.onSurface),
+                          ),
                         ),
-                      )
-                    : const Icon(Icons.refresh_rounded),
-                tooltip: 'Refresh',
-              );
-            },
-          ),
-        ],
-      ),
-      body: Consumer<LeaderboardProvider>(
-        builder: (context, provider, child) {
-          return CustomScrollView(
-            slivers: [
-              // Header Section
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: colorScheme.primaryContainer,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Icon(
-                              Icons.leaderboard_rounded,
-                              color: colorScheme.onPrimaryContainer,
-                              size: 24,
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            'Leaderboard',
+                            style: theme.textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w800,
                             ),
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Top Bookers',
-                                  style: theme.textTheme.titleMedium?.copyWith(
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                Text(
-                                  provider.monthRangeDisplay.isNotEmpty
-                                      ? provider.monthRangeDisplay
-                                      : 'This month\'s rankings',
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 4,
-                            ),
-                            decoration: BoxDecoration(
-                              color: colorScheme.surfaceContainerHighest,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              'Updated ${provider.lastUpdateDisplay}',
-                              style: theme.textTheme.labelSmall?.copyWith(
-                                color: colorScheme.onSurfaceVariant,
+                        ),
+                        if (provider.state != LeaderboardState.loading)
+                          GestureDetector(
+                            onTap: provider.refresh,
+                            child: Container(
+                              padding: const EdgeInsets.all(9),
+                              decoration: BoxDecoration(
+                                color: cs.surfaceContainerLow,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: cs.outlineVariant),
                               ),
+                              child: Icon(Icons.refresh_rounded,
+                                  size: 18, color: cs.onSurface),
                             ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                // Hero card
+                SliverToBoxAdapter(
+                  child: Container(
+                    margin: const EdgeInsets.fromLTRB(16, 20, 16, 0),
+                    padding: const EdgeInsets.all(22),
+                    decoration: BoxDecoration(
+                      color: AppColors.heroCardBg,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 5),
+                                decoration: BoxDecoration(
+                                  color: AppColors.brandGreen
+                                      .withValues(alpha: 0.35),
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Container(
+                                      width: 6,
+                                      height: 6,
+                                      decoration: const BoxDecoration(
+                                        color: AppColors.limeAccent,
+                                        shape: BoxShape.circle,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 7),
+                                    Text(
+                                      provider.monthRangeDisplay.isNotEmpty
+                                          ? provider.monthRangeDisplay.toUpperCase()
+                                          : 'THIS MONTH',
+                                      style: const TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                        letterSpacing: 0.8,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              const Text(
+                                'Top\nBookers',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 26,
+                                  fontWeight: FontWeight.w800,
+                                  height: 1.2,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                'Updated ${provider.lastUpdateDisplay}',
+                                style: const TextStyle(
+                                  color: Colors.white38,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const Text(
+                          '🏆',
+                          style: TextStyle(fontSize: 52),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                // Content
+                if (provider.state == LeaderboardState.loading &&
+                    provider.entries.isEmpty)
+                  const SliverFillRemaining(
+                    child: Center(child: CircularProgressIndicator()),
+                  )
+                else if (provider.state == LeaderboardState.error)
+                  SliverFillRemaining(
+                    child: Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.error_outline_rounded,
+                              size: 48, color: cs.error),
+                          const SizedBox(height: 12),
+                          Text(
+                            'Failed to load leaderboard',
+                            style: theme.textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            provider.errorMessage ?? '',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                                color: cs.onSurfaceVariant),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 16),
+                          FilledButton.icon(
+                            style: FilledButton.styleFrom(
+                                backgroundColor: AppColors.brandGreen),
+                            onPressed: provider.fetchLeaderboard,
+                            icon: const Icon(Icons.refresh_rounded),
+                            label: const Text('Retry'),
                           ),
                         ],
                       ),
-                    ],
+                    ),
+                  )
+                else if (provider.entries.isEmpty)
+                  SliverFillRemaining(
+                    child: Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.emoji_events_outlined,
+                            size: 64,
+                            color: cs.onSurfaceVariant.withValues(alpha: 0.3),
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'No bookings yet this month',
+                            style: theme.textTheme.titleMedium?.copyWith(
+                                color: cs.onSurfaceVariant),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                else
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
+                    sliver: SliverList(
+                      delegate: SliverChildBuilderDelegate(
+                        (context, index) {
+                          final entry = provider.entries[index];
+                          return _LeaderboardTile(
+                            rank: entry.rank,
+                            displayName: entry.displayName,
+                            phoneNumber: entry.phoneNumber,
+                            bookingCount: entry.bookingCount,
+                            medalOrRank: provider.getMedalForRank(entry.rank),
+                            isTopThree: entry.rank <= 3,
+                          );
+                        },
+                        childCount: provider.entries.length,
+                      ),
+                    ),
                   ),
-                ),
-              ),
 
-              // Content
-              if (provider.state == LeaderboardState.loading &&
-                  provider.entries.isEmpty)
-                const SliverFillRemaining(
-                  child: Center(
-                    child: CircularProgressIndicator(),
-                  ),
-                )
-              else if (provider.state == LeaderboardState.error)
-                SliverFillRemaining(
-                  child: Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.error_outline_rounded,
-                          size: 48,
-                          color: colorScheme.error,
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'Failed to load leaderboard',
-                          style: theme.textTheme.titleMedium,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          provider.errorMessage ?? 'Unknown error',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 16),
-                        FilledButton.icon(
-                          onPressed: () => provider.fetchLeaderboard(),
-                          icon: const Icon(Icons.refresh_rounded),
-                          label: const Text('Retry'),
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              else if (provider.entries.isEmpty)
-                SliverFillRemaining(
-                  child: Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.emoji_events_outlined,
-                          size: 64,
-                          color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'No bookings this month',
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Rankings will appear once customers make bookings',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              else
-                // Leaderboard List
-                SliverPadding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  sliver: SliverList(
-                    delegate: SliverChildBuilderDelegate(
-                      (context, index) {
-                        final entry = provider.entries[index];
-                        return _LeaderboardTile(
-                          rank: entry.rank,
-                          displayName: entry.displayName,
-                          bookingCount: entry.bookingCount,
-                          medalOrRank: provider.getMedalForRank(entry.rank),
-                          isTopThree: entry.rank <= 3,
-                        );
-                      },
-                      childCount: provider.entries.length,
-                    ),
-                  ),
-                ),
-
-              // Bottom padding
-              const SliverToBoxAdapter(
-                child: SizedBox(height: 32),
-              ),
-            ],
-          );
-        },
+                const SliverToBoxAdapter(child: SizedBox(height: 32)),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -234,6 +251,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
 class _LeaderboardTile extends StatelessWidget {
   final int rank;
   final String displayName;
+  final String phoneNumber;
   final int bookingCount;
   final String medalOrRank;
   final bool isTopThree;
@@ -241,6 +259,7 @@ class _LeaderboardTile extends StatelessWidget {
   const _LeaderboardTile({
     required this.rank,
     required this.displayName,
+    required this.phoneNumber,
     required this.bookingCount,
     required this.medalOrRank,
     required this.isTopThree,
@@ -249,76 +268,101 @@ class _LeaderboardTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    final backgroundColor = isTopThree
-        ? colorScheme.primaryContainer.withValues(alpha: 0.3)
-        : colorScheme.surfaceContainerLow;
-
-    final borderColor = isTopThree
-        ? colorScheme.primary.withValues(alpha: 0.3)
-        : Colors.transparent;
+    final cs = theme.colorScheme;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: BoxDecoration(
-        color: backgroundColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: borderColor, width: 1),
+        color: isTopThree
+            ? AppColors.brandGreen.withValues(alpha: 0.08)
+            : cs.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: isTopThree
+              ? AppColors.brandGreen.withValues(alpha: 0.25)
+              : cs.outlineVariant.withValues(alpha: 0.5),
+          width: 1,
+        ),
       ),
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        leading: Container(
-          width: 48,
-          height: 48,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: isTopThree
-                ? colorScheme.primaryContainer
-                : colorScheme.surfaceContainerHighest,
-            shape: BoxShape.circle,
-          ),
-          child: Text(
-            medalOrRank,
-            style: isTopThree
-                ? const TextStyle(fontSize: 24)
-                : theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: colorScheme.onSurfaceVariant,
+      child: Row(
+        children: [
+          // Rank / medal
+          Container(
+            width: 44,
+            height: 44,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: isTopThree
+                  ? AppColors.brandGreen.withValues(alpha: 0.15)
+                  : cs.surfaceContainerHighest,
+              shape: BoxShape.circle,
+            ),
+            child: isTopThree
+                ? Text(medalOrRank, style: const TextStyle(fontSize: 22))
+                : Text(
+                    medalOrRank,
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: cs.onSurfaceVariant,
+                    ),
                   ),
           ),
-        ),
-        title: Text(
-          displayName,
-          style: theme.textTheme.titleMedium?.copyWith(
-            fontWeight: isTopThree ? FontWeight.w600 : FontWeight.w500,
-          ),
-        ),
-        trailing: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(
-            color: colorScheme.secondaryContainer,
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.sports_soccer_rounded,
-                size: 16,
-                color: colorScheme.onSecondaryContainer,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                '$bookingCount',
-                style: theme.textTheme.labelLarge?.copyWith(
-                  color: colorScheme.onSecondaryContainer,
-                  fontWeight: FontWeight.w600,
+          const SizedBox(width: 12),
+          // Name + phone
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  displayName,
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: isTopThree ? FontWeight.w700 : FontWeight.w500,
+                    color: cs.onSurface,
+                  ),
                 ),
-              ),
-            ],
+                const SizedBox(height: 2),
+                Text(
+                  phoneNumber,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: cs.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
+          // Booking count badge
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: isTopThree
+                  ? AppColors.brandGreen.withValues(alpha: 0.15)
+                  : cs.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.sports_soccer_rounded,
+                  size: 14,
+                  color: isTopThree
+                      ? AppColors.brandGreen
+                      : cs.onSurfaceVariant,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  '$bookingCount',
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: isTopThree ? AppColors.brandGreen : cs.onSurface,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

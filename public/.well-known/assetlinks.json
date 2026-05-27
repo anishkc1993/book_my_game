@@ -1,0 +1,10 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "com.example.book_my_game",
+    "sha256_cert_fingerprints": [
+      "2C:A4:1D:74:ED:7B:A7:D3:DA:FF:53:4A:BE:74:78:59:1E:27:23:A1:03:08:3E:EF:39:B8:14:47:89:26:C4:DE"
+    ]
+  }
+}]

@@ -9,12 +9,16 @@ class LeaderboardRepositoryImpl implements LeaderboardRepository {
       : _remoteDataSource = remoteDataSource;
 
   @override
-  Future<List<LeaderboardEntry>> getMonthlyLeaderboard({bool forceRefresh = false}) async {
-    return await _remoteDataSource.getMonthlyLeaderboard(forceRefresh: forceRefresh);
+  Future<List<LeaderboardEntry>> getMonthlyLeaderboard({
+    required String turfId,
+    bool forceRefresh = false,
+  }) {
+    return _remoteDataSource.getMonthlyLeaderboard(
+      turfId: turfId,
+      forceRefresh: forceRefresh,
+    );
   }
 
   @override
-  Future<DateTime> getLastUpdateTime() async {
-    return await _remoteDataSource.getLastUpdateTime();
-  }
+  Future<DateTime> getLastUpdateTime() => _remoteDataSource.getLastUpdateTime();
 }

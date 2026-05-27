@@ -48,15 +48,47 @@ dependencies:
   # Utilities
   equatable: ^2.0.5
   shared_preferences: ^2.2.2
+  app_links: ^6.3.2
 
   # Charts
   fl_chart: ^0.69.0
+
+  # Fonts
+  google_fonts: ^6.2.1
+
+  # Sharing / launching — pinned to versions compatible with AGP 8.6
+  url_launcher: 6.2.6
+  share_plus: 7.2.2
+  qr_flutter: ^4.1.0
+
+  # Maps — OpenStreetMap via flutter_map (no API key, no billing).
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
+  http: ^1.2.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
 
   flutter_lints: ^2.0.0
+  flutter_launcher_icons: ^0.14.3
+
+# Pin transitive plugins to versions compatible with our toolchain
+# (AGP 8.6 / Kotlin 2.1).
+dependency_overrides:
+  shared_preferences_android: 2.4.10
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  remove_alpha_ios: true
+  image_path: "assets/icon/app_icon.png"
+  adaptive_icon_background: "#1B5E20"
+  adaptive_icon_foreground: "assets/icon/app_icon.png"
+  web:
+    generate: true
+    image_path: "assets/icon/app_icon.png"
+  min_sdk_android: 21
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -69,10 +101,8 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  # To add assets to your application, add an assets section, like this:
-  # assets:
-  #   - images/a_dot_burr.jpeg
-  #   - images/a_dot_ham.jpeg
+  assets:
+    - assets/icon/
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/assets-and-images/#resolution-aware

@@ -28,10 +28,17 @@ class BookingEntity extends Equatable {
   final String? remarks;
   final BookingStatus status;
   final bool isPaid;
+  final double? basePrice; // Auto-calculated price based on time period
   final double? amountPaid;
   final DateTime? paidAt;
   final String? createdByAdmin; // Admin UID if created by admin
   final DateTime? createdAt;
+  // Synthesized from a recurring/regular booking template — not persisted.
+  final bool isRegular;
+  // When isRegular is true, the source regular booking's id.
+  final String? regularBookingId;
+  // Multi-tenant: which turf this booking belongs to.
+  final String? turfId;
 
   const BookingEntity({
     this.id,
@@ -44,10 +51,14 @@ class BookingEntity extends Equatable {
     this.remarks,
     this.status = BookingStatus.pending,
     this.isPaid = false,
+    this.basePrice,
     this.amountPaid,
     this.paidAt,
     this.createdByAdmin,
     this.createdAt,
+    this.isRegular = false,
+    this.regularBookingId,
+    this.turfId,
   });
 
   bool get isPending => status == BookingStatus.pending;
@@ -78,9 +89,13 @@ class BookingEntity extends Equatable {
         remarks,
         status,
         isPaid,
+        basePrice,
         amountPaid,
         paidAt,
         createdByAdmin,
         createdAt,
+        isRegular,
+        regularBookingId,
+        turfId,
       ];
 }

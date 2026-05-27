@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../../core/theme/app_theme.dart';
+
 class BookingCalendar extends StatefulWidget {
   final DateTime selectedDate;
   final Function(DateTime) onDateSelected;
@@ -15,184 +17,144 @@ class BookingCalendar extends StatefulWidget {
 }
 
 class _BookingCalendarState extends State<BookingCalendar> {
-  late DateTime _currentMonth;
-  late DateTime _today;
+  late final ScrollController _scrollController;
+  static const int _daysToShow = 30;
+
+  static const _dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  static const _monthNames = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+
+  late final DateTime _todayNorm;
+  late final List<DateTime> _dates;
 
   @override
   void initState() {
     super.initState();
-    _today = DateTime.now();
-    _currentMonth = DateTime(widget.selectedDate.year, widget.selectedDate.month);
+    final now = DateTime.now();
+    _todayNorm = DateTime(now.year, now.month, now.day);
+    _dates = List.generate(_daysToShow, (i) => _todayNorm.add(Duration(days: i)));
+    _scrollController = ScrollController();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToSelected());
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _scrollToSelected() {
+    final selNorm = DateTime(
+      widget.selectedDate.year,
+      widget.selectedDate.month,
+      widget.selectedDate.day,
+    );
+    final diff = selNorm.difference(_todayNorm).inDays;
+    if (diff > 0 && diff < _daysToShow && _scrollController.hasClients) {
+      final offset = (diff * 60.0) - 40;
+      _scrollController.animateTo(
+        offset.clamp(0.0, _scrollController.position.maxScrollExtent),
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
+    final cs = theme.colorScheme;
 
-    return Container(
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Column(
-        children: [
-          // Month Navigation Header
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                IconButton(
-                  onPressed: _canGoToPreviousMonth() ? _goToPreviousMonth : null,
-                  icon: const Icon(Icons.chevron_left_rounded),
-                  style: IconButton.styleFrom(
-                    backgroundColor: colorScheme.surfaceContainerHighest,
-                  ),
-                ),
-                Text(
-                  _getMonthYearLabel(_currentMonth),
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                IconButton(
-                  onPressed: _goToNextMonth,
-                  icon: const Icon(Icons.chevron_right_rounded),
-                  style: IconButton.styleFrom(
-                    backgroundColor: colorScheme.surfaceContainerHighest,
-                  ),
-                ),
-              ],
-            ),
-          ),
+    final selMonth = _monthNames[widget.selectedDate.month - 1];
+    final selYear = widget.selectedDate.year;
 
-          // Weekday Headers
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Row(
-              children: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-                  .map((day) => Expanded(
-                        child: Center(
-                          child: Text(
-                            day,
-                            style: theme.textTheme.labelSmall?.copyWith(
-                              color: colorScheme.onSurfaceVariant,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ),
-                      ))
-                  .toList(),
-            ),
-          ),
-
-          const SizedBox(height: 8),
-
-          // Calendar Grid
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
-            child: _buildCalendarGrid(context),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCalendarGrid(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    final firstDayOfMonth = DateTime(_currentMonth.year, _currentMonth.month, 1);
-    final lastDayOfMonth = DateTime(_currentMonth.year, _currentMonth.month + 1, 0);
-    final daysInMonth = lastDayOfMonth.day;
-    final startWeekday = firstDayOfMonth.weekday % 7; // Sunday = 0
-
-    final days = <Widget>[];
-
-    // Empty cells for days before the first day of month
-    for (int i = 0; i < startWeekday; i++) {
-      days.add(const SizedBox());
-    }
-
-    // Day cells
-    for (int day = 1; day <= daysInMonth; day++) {
-      final date = DateTime(_currentMonth.year, _currentMonth.month, day);
-      final isSelected = _isSameDay(date, widget.selectedDate);
-      final isToday = _isSameDay(date, _today);
-      final isPast = date.isBefore(DateTime(_today.year, _today.month, _today.day));
-
-      days.add(
-        GestureDetector(
-          onTap: isPast ? null : () => widget.onDateSelected(date),
-          child: Container(
-            margin: const EdgeInsets.all(2),
-            decoration: BoxDecoration(
-              color: isSelected
-                  ? colorScheme.primary
-                  : isToday
-                      ? colorScheme.primaryContainer
-                      : null,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Center(
-              child: Text(
-                '$day',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: isPast
-                      ? colorScheme.onSurface.withOpacity(0.3)
-                      : isSelected
-                          ? colorScheme.onPrimary
-                          : isToday
-                              ? colorScheme.onPrimaryContainer
-                              : colorScheme.onSurface,
-                  fontWeight: isSelected || isToday ? FontWeight.w600 : null,
-                ),
-              ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 2, bottom: 10),
+          child: Text(
+            '$selMonth $selYear',
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w700,
+              color: cs.onSurface,
             ),
           ),
         ),
-      );
-    }
+        SizedBox(
+          height: 72,
+          child: ListView.separated(
+            controller: _scrollController,
+            scrollDirection: Axis.horizontal,
+            padding: EdgeInsets.zero,
+            itemCount: _dates.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 8),
+            itemBuilder: (context, i) {
+              final date = _dates[i];
+              final isSelected = date.year == widget.selectedDate.year &&
+                  date.month == widget.selectedDate.month &&
+                  date.day == widget.selectedDate.day;
+              final isToday = date == _todayNorm;
+              final dayName = _dayNames[date.weekday - 1];
 
-    return GridView.count(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      crossAxisCount: 7,
-      childAspectRatio: 1,
-      children: days,
+              return GestureDetector(
+                onTap: () => widget.onDateSelected(date),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 150),
+                  width: 52,
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? AppColors.brandGreen
+                        : cs.surfaceContainerLow,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: isSelected
+                          ? AppColors.brandGreen
+                          : isToday
+                              ? AppColors.brandGreen.withValues(alpha: 0.5)
+                              : cs.outlineVariant,
+                      width: 1,
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        dayName,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: isSelected ? Colors.white70 : cs.onSurfaceVariant,
+                          fontWeight: FontWeight.w500,
+                          fontSize: 10,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${date.day}',
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          color: isSelected ? Colors.white : cs.onSurface,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      if (isToday)
+                        Container(
+                          margin: const EdgeInsets.only(top: 3),
+                          width: 4,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: isSelected ? Colors.white60 : AppColors.brandGreen,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
-  }
-
-  bool _isSameDay(DateTime a, DateTime b) {
-    return a.year == b.year && a.month == b.month && a.day == b.day;
-  }
-
-  String _getMonthYearLabel(DateTime date) {
-    const months = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December'
-    ];
-    return '${months[date.month - 1]} ${date.year}';
-  }
-
-  bool _canGoToPreviousMonth() {
-    final previousMonth = DateTime(_currentMonth.year, _currentMonth.month - 1);
-    final currentMonthStart = DateTime(_today.year, _today.month);
-    return !previousMonth.isBefore(currentMonthStart);
-  }
-
-  void _goToPreviousMonth() {
-    if (_canGoToPreviousMonth()) {
-      setState(() {
-        _currentMonth = DateTime(_currentMonth.year, _currentMonth.month - 1);
-      });
-    }
-  }
-
-  void _goToNextMonth() {
-    setState(() {
-      _currentMonth = DateTime(_currentMonth.year, _currentMonth.month + 1);
-    });
   }
 }

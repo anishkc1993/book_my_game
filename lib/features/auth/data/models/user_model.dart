@@ -13,6 +13,8 @@ class UserModel extends UserEntity {
     super.role = UserRole.customer,
     super.membership = MembershipTier.free,
     super.createdAt,
+    super.turfId,
+    super.turfName,
   });
 
   /// Create from Firebase Auth user (initial login, no Firestore data yet)
@@ -41,6 +43,8 @@ class UserModel extends UserEntity {
       role: UserRole.fromString(data['role'] as String?),
       membership: MembershipTier.fromString(data['membership'] as String?),
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
+      turfId: data['turfId'] as String?,
+      turfName: data['turfName'] as String?,
     );
   }
 
@@ -50,16 +54,23 @@ class UserModel extends UserEntity {
       'phone': phoneNumber,
       'role': role.value,
       'membership': membership.value,
+      'turfId': turfId,
+      'turfName': turfName,
       'createdAt': FieldValue.serverTimestamp(),
     };
   }
 
   /// Convert to Firestore document for updates (excludes createdAt)
   Map<String, dynamic> toFirestoreUpdate() {
-    return {
+    final map = <String, dynamic>{
       'phone': phoneNumber,
       'updatedAt': FieldValue.serverTimestamp(),
     };
+    // Only write turfId/turfName when we have values, so a re-login doesn't
+    // wipe an existing assignment.
+    if (turfId != null) map['turfId'] = turfId;
+    if (turfName != null) map['turfName'] = turfName;
+    return map;
   }
 
   UserModel copyWith({
@@ -71,6 +82,8 @@ class UserModel extends UserEntity {
     UserRole? role,
     MembershipTier? membership,
     DateTime? createdAt,
+    String? turfId,
+    String? turfName,
   }) {
     return UserModel(
       uid: uid ?? this.uid,
@@ -81,6 +94,8 @@ class UserModel extends UserEntity {
       role: role ?? this.role,
       membership: membership ?? this.membership,
       createdAt: createdAt ?? this.createdAt,
+      turfId: turfId ?? this.turfId,
+      turfName: turfName ?? this.turfName,
     );
   }
 
@@ -93,8 +108,11 @@ class UserModel extends UserEntity {
       email: email,
       photoUrl: photoUrl,
       role: UserRole.fromString(firestoreData['role'] as String?),
-      membership: MembershipTier.fromString(firestoreData['membership'] as String?),
+      membership:
+          MembershipTier.fromString(firestoreData['membership'] as String?),
       createdAt: (firestoreData['createdAt'] as Timestamp?)?.toDate() ?? createdAt,
+      turfId: firestoreData['turfId'] as String?,
+      turfName: firestoreData['turfName'] as String?,
     );
   }
 }

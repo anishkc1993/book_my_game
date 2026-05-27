@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../../../core/constants/app_constants.dart';
 import '../../../../core/errors/exceptions.dart';
+import '../../domain/entities/user_entity.dart';
 import '../models/user_model.dart';
 
 abstract class AuthRemoteDataSource {
@@ -23,6 +24,15 @@ abstract class AuthRemoteDataSource {
     required String verificationId,
     required String otp,
   });
+
+  Future<void> sendEmailLink({required String email});
+
+  Future<UserModel> verifyEmailLink({
+    required String email,
+    required String emailLink,
+  });
+
+  bool isSignInWithEmailLink(String link);
 
   Future<void> signOut();
 
@@ -170,6 +180,62 @@ class AuthRemoteDataSourceImpl implements AuthRemoteDataSource {
   }
 
   @override
+  Future<void> sendEmailLink({required String email}) async {
+    try {
+      final actionCodeSettings = ActionCodeSettings(
+        url: AppConstants.emailLinkUrl,
+        handleCodeInApp: true,
+        androidPackageName: 'com.example.book_my_game',
+        androidInstallApp: true,
+        androidMinimumVersion: '21',
+      );
+      await _firebaseAuth.sendSignInLinkToEmail(
+        email: email,
+        actionCodeSettings: actionCodeSettings,
+      );
+      debugPrint('📧 sendEmailLink: Link sent to $email');
+    } on FirebaseAuthException catch (e) {
+      debugPrint('❌ sendEmailLink: ${e.message}');
+      throw AuthException(_mapAuthErrorToMessage(e));
+    } catch (e) {
+      throw AuthException(e.toString());
+    }
+  }
+
+  @override
+  Future<UserModel> verifyEmailLink({
+    required String email,
+    required String emailLink,
+  }) async {
+    try {
+      debugPrint('📧 verifyEmailLink: Verifying for $email');
+      final userCredential = await _firebaseAuth.signInWithEmailLink(
+        email: email,
+        emailLink: emailLink,
+      );
+
+      if (userCredential.user == null) {
+        throw const AuthException('Email verification failed');
+      }
+
+      final userModel = UserModel.fromFirebaseUser(userCredential.user!);
+      final savedUser = await saveUserToFirestore(userModel);
+      debugPrint('📧 verifyEmailLink: Success for $email');
+      return savedUser;
+    } on FirebaseAuthException catch (e) {
+      debugPrint('❌ verifyEmailLink: ${e.message}');
+      throw AuthException(_mapAuthErrorToMessage(e));
+    } catch (e) {
+      throw AuthException(e.toString());
+    }
+  }
+
+  @override
+  bool isSignInWithEmailLink(String link) {
+    return _firebaseAuth.isSignInWithEmailLink(link);
+  }
+
+  @override
   Future<void> signOut() async {
     try {
       await _firebaseAuth.signOut();
@@ -188,25 +254,65 @@ class AuthRemoteDataSourceImpl implements AuthRemoteDataSource {
       final docSnapshot = await userDoc.get();
       debugPrint('📝 saveUserToFirestore: Doc exists=${docSnapshot.exists}');
 
+      UserModel resolvedUser;
       if (!docSnapshot.exists) {
         // Create new user with defaults (CUSTOMER, FREE)
         final data = user.toFirestore();
         debugPrint('📝 saveUserToFirestore: Creating new user with data=$data');
         await userDoc.set(data);
         debugPrint('📝 saveUserToFirestore: User created successfully!');
-        // Return user with defaults applied
-        return user;
+        resolvedUser = user;
       } else {
         // User exists - update timestamp and return merged data
         debugPrint('📝 saveUserToFirestore: Updating existing user');
         await userDoc.update(user.toFirestoreUpdate());
-        // Return user with Firestore data (role, membership)
-        return user.mergeWithFirestore(
+        resolvedUser = user.mergeWithFirestore(
             docSnapshot.data() as Map<String, dynamic>);
       }
+
+      // Multi-tenant: if this user is an admin without a turfId, try to find
+      // a turf where adminPhone == user.phone and link it.
+      if (resolvedUser.role == UserRole.admin &&
+          (resolvedUser.turfId == null || resolvedUser.turfId!.isEmpty) &&
+          resolvedUser.phoneNumber != null) {
+        final turfMatch = await _findTurfForPhone(resolvedUser.phoneNumber!);
+        if (turfMatch != null) {
+          debugPrint(
+              '🏟️ Linking admin ${resolvedUser.uid} to turf ${turfMatch.$1} (${turfMatch.$2})');
+          await userDoc.update({
+            'turfId': turfMatch.$1,
+            'turfName': turfMatch.$2,
+          });
+          resolvedUser = resolvedUser.copyWith(
+            turfId: turfMatch.$1,
+            turfName: turfMatch.$2,
+          );
+        }
+      }
+
+      return resolvedUser;
     } catch (e) {
       debugPrint('❌ saveUserToFirestore ERROR: $e');
       throw ServerException('Failed to save user: ${e.toString()}');
+    }
+  }
+
+  /// Look up a turf where adminPhone matches the given phone.
+  /// Returns (turfId, turfName) or null.
+  Future<(String, String)?> _findTurfForPhone(String phone) async {
+    try {
+      final snapshot = await _firestore
+          .collection('turfs')
+          .where('adminPhone', isEqualTo: phone)
+          .limit(1)
+          .get();
+      if (snapshot.docs.isEmpty) return null;
+      final doc = snapshot.docs.first;
+      final data = doc.data();
+      return (doc.id, data['name'] as String);
+    } catch (e) {
+      debugPrint('⚠️ _findTurfForPhone failed: $e');
+      return null;
     }
   }
 

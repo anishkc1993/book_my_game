@@ -14,10 +14,14 @@ class BookingModel extends BookingEntity {
     super.remarks,
     super.status,
     super.isPaid,
+    super.basePrice,
     super.amountPaid,
     super.paidAt,
     super.createdByAdmin,
     super.createdAt,
+    super.isRegular,
+    super.regularBookingId,
+    super.turfId,
   });
 
   factory BookingModel.fromFirestore(DocumentSnapshot doc) {
@@ -33,10 +37,12 @@ class BookingModel extends BookingEntity {
       remarks: data['remarks'] as String?,
       status: BookingStatus.fromString(data['status'] as String?),
       isPaid: data['isPaid'] as bool? ?? false,
+      basePrice: (data['basePrice'] as num?)?.toDouble(),
       amountPaid: (data['amountPaid'] as num?)?.toDouble(),
       paidAt: (data['paidAt'] as Timestamp?)?.toDate(),
       createdByAdmin: data['createdByAdmin'] as String?,
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
+      turfId: data['turfId'] as String?,
     );
   }
 
@@ -52,10 +58,12 @@ class BookingModel extends BookingEntity {
       remarks: entity.remarks,
       status: entity.status,
       isPaid: entity.isPaid,
+      basePrice: entity.basePrice,
       amountPaid: entity.amountPaid,
       paidAt: entity.paidAt,
       createdByAdmin: entity.createdByAdmin,
       createdAt: entity.createdAt,
+      turfId: entity.turfId,
     );
   }
 
@@ -74,9 +82,11 @@ class BookingModel extends BookingEntity {
       'remarks': remarks,
       'status': status.value,
       'isPaid': isPaid,
+      'basePrice': basePrice,
       'amountPaid': amountPaid,
       'paidAt': paidAt != null ? Timestamp.fromDate(paidAt!) : null,
       'createdByAdmin': createdByAdmin,
+      'turfId': turfId,
       'createdAt': FieldValue.serverTimestamp(),
     };
   }
@@ -92,10 +102,12 @@ class BookingModel extends BookingEntity {
     String? remarks,
     BookingStatus? status,
     bool? isPaid,
+    double? basePrice,
     double? amountPaid,
     DateTime? paidAt,
     String? createdByAdmin,
     DateTime? createdAt,
+    String? turfId,
   }) {
     return BookingModel(
       id: id ?? this.id,
@@ -108,10 +120,12 @@ class BookingModel extends BookingEntity {
       remarks: remarks ?? this.remarks,
       status: status ?? this.status,
       isPaid: isPaid ?? this.isPaid,
+      basePrice: basePrice ?? this.basePrice,
       amountPaid: amountPaid ?? this.amountPaid,
       paidAt: paidAt ?? this.paidAt,
       createdByAdmin: createdByAdmin ?? this.createdByAdmin,
       createdAt: createdAt ?? this.createdAt,
+      turfId: turfId ?? this.turfId,
     );
   }
 }

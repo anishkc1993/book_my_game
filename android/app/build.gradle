@@ -26,6 +26,18 @@ if (flutterVersionName == null) {
 android {
     namespace "com.example.book_my_game"
     compileSdk 36
+    ndkVersion = "28.2.13676358"
+
+    // Pin transitive androidx versions to ones that work with AGP 8.6.0.
+    // Some Flutter plugins try to pull newer (1.17.0 / 1.9.0) which require
+    // AGP 8.9+; force older versions here.
+    configurations.all {
+        resolutionStrategy {
+            force "androidx.core:core:1.13.1"
+            force "androidx.core:core-ktx:1.13.1"
+            force "androidx.browser:browser:1.8.0"
+        }
+    }
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -42,6 +54,13 @@ android {
         targetSdk 34
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
+
+        // Google Maps API key — set MAPS_API_KEY in android/local.properties.
+        // Use `+=` so we don't clobber Flutter's auto-injected placeholders
+        // (like applicationName).
+        manifestPlaceholders += [
+            MAPS_API_KEY: localProperties.getProperty("MAPS_API_KEY", "")
+        ]
     }
 
     buildTypes {

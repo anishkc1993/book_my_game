@@ -42,6 +42,12 @@ class UserEntity extends Equatable {
   final UserRole role;
   final MembershipTier membership;
   final DateTime? createdAt;
+  // Multi-tenant: which turf this user belongs to.
+  // - Admin: the turf they manage (resolved from phone match).
+  // - Customer: the turf they book at (picked at signup, switchable later).
+  final String? turfId;
+  // Denormalized turf name for quick display (kept in sync on user doc).
+  final String? turfName;
 
   const UserEntity({
     required this.uid,
@@ -52,11 +58,14 @@ class UserEntity extends Equatable {
     this.role = UserRole.customer,
     this.membership = MembershipTier.free,
     this.createdAt,
+    this.turfId,
+    this.turfName,
   });
 
   bool get isAuthenticated => uid.isNotEmpty;
   bool get isAdmin => role == UserRole.admin;
   bool get isPremium => membership != MembershipTier.free;
+  bool get hasTurf => turfId != null && turfId!.isNotEmpty;
 
   @override
   List<Object?> get props => [
@@ -68,5 +77,7 @@ class UserEntity extends Equatable {
         role,
         membership,
         createdAt,
+        turfId,
+        turfName,
       ];
 }

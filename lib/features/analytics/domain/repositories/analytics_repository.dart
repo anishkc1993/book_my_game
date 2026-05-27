@@ -1,5 +1,5 @@
 import '../entities/analytics_entity.dart';
 
 abstract class AnalyticsRepository {
-  Future<AnalyticsEntity> getAnalytics(TimePeriod period);
+  Future<AnalyticsEntity> getAnalytics(String turfId, TimePeriod period);
 }

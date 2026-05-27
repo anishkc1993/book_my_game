@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
-import '../../domain/entities/analytics_entity.dart';
+import '../../../../core/theme/app_theme.dart';
 import '../providers/analytics_provider.dart';
 import '../widgets/bookings_chart.dart';
 import '../widgets/revenue_chart.dart';
@@ -26,116 +26,127 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
   }
 
   String _formatCurrency(double amount) {
-    if (amount >= 100000) {
-      return 'Rs. ${(amount / 1000).toStringAsFixed(0)}k';
-    } else if (amount >= 1000) {
-      return 'Rs. ${amount.toStringAsFixed(0)}';
-    }
+    if (amount >= 100000) return 'Rs. ${(amount / 1000).toStringAsFixed(0)}k';
     return 'Rs. ${amount.toStringAsFixed(0)}';
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
+    final cs = theme.colorScheme;
 
     return Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          onPressed: () => context.pop(),
-          icon: const Icon(Icons.arrow_back_rounded),
-        ),
-        title: const Text('Analytics'),
-        centerTitle: true,
-        actions: [
-          Consumer<AnalyticsProvider>(
-            builder: (context, provider, _) {
-              return IconButton(
-                onPressed: provider.state == AnalyticsState.loading
-                    ? null
-                    : () => provider.fetchAnalytics(forceRefresh: true),
-                icon: provider.state == AnalyticsState.loading
-                    ? SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: colorScheme.onSurface,
-                        ),
-                      )
-                    : const Icon(Icons.refresh_rounded),
-                tooltip: 'Refresh',
-              );
-            },
-          ),
-        ],
-      ),
-      body: Consumer<AnalyticsProvider>(
-        builder: (context, provider, child) {
-          return RefreshIndicator(
-            onRefresh: () => provider.fetchAnalytics(forceRefresh: true),
-            child: CustomScrollView(
-              slivers: [
-                // Time Period Selector
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: TimePeriodSelector(
-                      selectedPeriod: provider.selectedPeriod,
-                      onPeriodChanged: provider.selectPeriod,
+      body: SafeArea(
+        child: Consumer<AnalyticsProvider>(
+          builder: (context, provider, _) {
+            return RefreshIndicator(
+              onRefresh: () => provider.fetchAnalytics(forceRefresh: true),
+              color: AppColors.brandGreen,
+              child: CustomScrollView(
+                slivers: [
+                  // App bar
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                      child: Row(
+                        children: [
+                          GestureDetector(
+                            onTap: () => context.pop(),
+                            child: Container(
+                              padding: const EdgeInsets.all(9),
+                              decoration: BoxDecoration(
+                                color: cs.surfaceContainerLow,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: cs.outlineVariant),
+                              ),
+                              child: Icon(Icons.arrow_back_rounded,
+                                  size: 18, color: cs.onSurface),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Analytics',
+                              style: theme.textTheme.titleLarge?.copyWith(
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                          if (provider.state != AnalyticsState.loading)
+                            GestureDetector(
+                              onTap: () =>
+                                  provider.fetchAnalytics(forceRefresh: true),
+                              child: Container(
+                                padding: const EdgeInsets.all(9),
+                                decoration: BoxDecoration(
+                                  color: cs.surfaceContainerLow,
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(color: cs.outlineVariant),
+                                ),
+                                child: Icon(Icons.refresh_rounded,
+                                    size: 18, color: cs.onSurface),
+                              ),
+                            ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
 
-                // Content
-                if (provider.state == AnalyticsState.loading &&
-                    provider.currentAnalytics == null)
-                  const SliverFillRemaining(
-                    child: Center(child: CircularProgressIndicator()),
-                  )
-                else if (provider.state == AnalyticsState.error &&
-                    provider.currentAnalytics == null)
-                  SliverFillRemaining(
-                    child: _buildErrorState(context, provider),
-                  )
-                else
-                  ..._buildAnalyticsContent(context, provider),
-              ],
-            ),
-          );
-        },
+                  // Period selector
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
+                      child: TimePeriodSelector(
+                        selectedPeriod: provider.selectedPeriod,
+                        onPeriodChanged: provider.selectPeriod,
+                      ),
+                    ),
+                  ),
+
+                  // Content
+                  if (provider.state == AnalyticsState.loading &&
+                      provider.currentAnalytics == null)
+                    const SliverFillRemaining(
+                      child: Center(child: CircularProgressIndicator()),
+                    )
+                  else if (provider.state == AnalyticsState.error &&
+                      provider.currentAnalytics == null)
+                    SliverFillRemaining(
+                      child: _buildErrorState(context, provider),
+                    )
+                  else
+                    ..._buildContent(context, provider),
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }
 
-  Widget _buildErrorState(BuildContext context, AnalyticsProvider provider) {
+  Widget _buildErrorState(
+      BuildContext context, AnalyticsProvider provider) {
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
+    final cs = theme.colorScheme;
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            Icons.error_outline_rounded,
-            size: 48,
-            color: colorScheme.error,
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'Failed to load analytics',
-            style: theme.textTheme.titleMedium,
-          ),
+          Icon(Icons.error_outline_rounded, size: 48, color: cs.error),
+          const SizedBox(height: 12),
+          Text('Failed to load analytics', style: theme.textTheme.titleMedium),
           const SizedBox(height: 8),
           Text(
-            provider.errorMessage ?? 'Unknown error',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurfaceVariant,
-            ),
+            provider.errorMessage ?? '',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: cs.onSurfaceVariant),
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 16),
           FilledButton.icon(
+            style: FilledButton.styleFrom(
+                backgroundColor: AppColors.brandGreen),
             onPressed: () => provider.fetchAnalytics(forceRefresh: true),
             icon: const Icon(Icons.refresh_rounded),
             label: const Text('Retry'),
@@ -145,10 +156,8 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
     );
   }
 
-  List<Widget> _buildAnalyticsContent(
-    BuildContext context,
-    AnalyticsProvider provider,
-  ) {
+  List<Widget> _buildContent(
+      BuildContext context, AnalyticsProvider provider) {
     final analytics = provider.currentAnalytics;
     if (analytics == null) {
       return [
@@ -158,37 +167,33 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
       ];
     }
 
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
+    final cs = Theme.of(context).colorScheme;
 
     return [
-      // Revenue Section
+      // Revenue section
       SliverToBoxAdapter(
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
+          padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildSectionHeader(
-                context,
-                icon: Icons.currency_rupee_rounded,
-                title: 'Revenue',
-                color: colorScheme.primary,
-              ),
+              _sectionHeader(context,
+                  icon: Icons.currency_rupee_rounded,
+                  label: 'Revenue'),
               const SizedBox(height: 12),
               StatCard(
                 label: 'Total Revenue',
                 value: _formatCurrency(analytics.totalRevenue),
                 icon: Icons.account_balance_wallet_rounded,
-                iconColor: colorScheme.primary,
+                iconColor: AppColors.brandGreen,
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
               Row(
                 children: [
                   MiniStatCard(
                     label: 'Paid',
                     value: _formatCurrency(analytics.paidRevenue),
-                    valueColor: Colors.green,
+                    valueColor: AppColors.brandGreen,
                   ),
                   const SizedBox(width: 8),
                   MiniStatCard(
@@ -208,20 +213,16 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
         ),
       ),
 
-      // Revenue Chart
+      // Revenue chart
       if (analytics.dailyRevenue.length > 1)
         SliverToBoxAdapter(
           child: Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildSectionHeader(
-                  context,
-                  icon: Icons.bar_chart_rounded,
-                  title: 'Revenue Trend',
-                  color: colorScheme.tertiary,
-                ),
+                _sectionHeader(context,
+                    icon: Icons.bar_chart_rounded, label: 'Revenue Trend'),
                 const SizedBox(height: 12),
                 RevenueChart(
                   data: analytics.dailyRevenue,
@@ -232,19 +233,15 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
           ),
         ),
 
-      // Bookings Section
+      // Bookings section
       SliverToBoxAdapter(
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
+          padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildSectionHeader(
-                context,
-                icon: Icons.calendar_month_rounded,
-                title: 'Bookings',
-                color: colorScheme.secondary,
-              ),
+              _sectionHeader(context,
+                  icon: Icons.calendar_month_rounded, label: 'Bookings'),
               const SizedBox(height: 12),
               Row(
                 children: [
@@ -256,19 +253,19 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
                   MiniStatCard(
                     label: 'Active',
                     value: analytics.activeBookings.toString(),
-                    valueColor: colorScheme.primary,
+                    valueColor: AppColors.brandGreen,
                   ),
                   const SizedBox(width: 8),
                   MiniStatCard(
                     label: 'Done',
                     value: analytics.completedBookings.toString(),
-                    valueColor: Colors.green,
+                    valueColor: cs.primary,
                   ),
                   const SizedBox(width: 8),
                   MiniStatCard(
                     label: 'Cancel',
                     value: analytics.cancelledBookings.toString(),
-                    valueColor: Colors.red,
+                    valueColor: cs.error,
                   ),
                 ],
               ),
@@ -277,19 +274,15 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
         ),
       ),
 
-      // Busiest Hours Chart
+      // Busiest hours
       SliverToBoxAdapter(
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildSectionHeader(
-                context,
-                icon: Icons.schedule_rounded,
-                title: 'Busiest Hours',
-                color: Colors.orange,
-              ),
+              _sectionHeader(context,
+                  icon: Icons.schedule_rounded, label: 'Busiest Hours'),
               const SizedBox(height: 12),
               BookingsHourlyChart(bookingsByHour: analytics.bookingsByHour),
             ],
@@ -297,19 +290,15 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
         ),
       ),
 
-      // Customers Section
+      // Customers
       SliverToBoxAdapter(
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
+          padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildSectionHeader(
-                context,
-                icon: Icons.people_rounded,
-                title: 'Customers',
-                color: Colors.purple,
-              ),
+              _sectionHeader(context,
+                  icon: Icons.people_rounded, label: 'Customers'),
               const SizedBox(height: 12),
               Row(
                 children: [
@@ -321,13 +310,13 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
                   MiniStatCard(
                     label: 'New',
                     value: analytics.newCustomers.toString(),
-                    valueColor: Colors.green,
+                    valueColor: AppColors.brandGreen,
                   ),
                   const SizedBox(width: 8),
                   MiniStatCard(
                     label: 'Repeat',
                     value: analytics.repeatCustomers.toString(),
-                    valueColor: colorScheme.primary,
+                    valueColor: cs.primary,
                   ),
                 ],
               ),
@@ -336,88 +325,83 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
         ),
       ),
 
-      // Utilization Section
+      // Utilization
       SliverToBoxAdapter(
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildSectionHeader(
-                context,
-                icon: Icons.pie_chart_rounded,
-                title: 'Slot Utilization',
-                color: Colors.teal,
-              ),
+              _sectionHeader(context,
+                  icon: Icons.pie_chart_rounded, label: 'Slot Utilization'),
               const SizedBox(height: 12),
-              _buildUtilizationCard(context, analytics),
+              _UtilizationCard(utilization: analytics.slotUtilizationRate),
             ],
           ),
         ),
       ),
 
-      // Bottom padding
-      const SliverToBoxAdapter(
-        child: SizedBox(height: 32),
-      ),
+      const SliverToBoxAdapter(child: SizedBox(height: 40)),
     ];
   }
 
-  Widget _buildSectionHeader(
-    BuildContext context, {
-    required IconData icon,
-    required String title,
-    required Color color,
-  }) {
+  Widget _sectionHeader(BuildContext context,
+      {required IconData icon, required String label}) {
     final theme = Theme.of(context);
-
+    final cs = theme.colorScheme;
     return Row(
       children: [
         Container(
-          padding: const EdgeInsets.all(8),
+          padding: const EdgeInsets.all(7),
           decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.15),
+            color: cs.surfaceContainerHighest,
             borderRadius: BorderRadius.circular(8),
           ),
-          child: Icon(icon, size: 18, color: color),
+          child: Icon(icon, size: 16, color: cs.onSurfaceVariant),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(width: 8),
         Text(
-          title,
-          style: theme.textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.w600,
+          label,
+          style: theme.textTheme.titleSmall?.copyWith(
+            fontWeight: FontWeight.w700,
+            color: cs.onSurface,
           ),
         ),
       ],
     );
   }
+}
 
-  Widget _buildUtilizationCard(
-    BuildContext context,
-    AnalyticsEntity analytics,
-  ) {
+class _UtilizationCard extends StatelessWidget {
+  final double utilization;
+
+  const _UtilizationCard({required this.utilization});
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final utilization = analytics.slotUtilizationRate.clamp(0.0, 100.0);
+    final cs = theme.colorScheme;
+    final pct = utilization.clamp(0.0, 100.0);
 
-    Color progressColor;
+    Color barColor;
     String status;
-    if (utilization >= 80) {
-      progressColor = Colors.green;
+    if (pct >= 80) {
+      barColor = AppColors.brandGreen;
       status = 'Excellent';
-    } else if (utilization >= 50) {
-      progressColor = Colors.orange;
+    } else if (pct >= 50) {
+      barColor = Colors.orange;
       status = 'Good';
     } else {
-      progressColor = Colors.red;
+      barColor = cs.error;
       status = 'Low';
     }
 
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerLow,
+        color: cs.surfaceContainerLow,
         borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.5)),
       ),
       child: Column(
         children: [
@@ -425,46 +409,46 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                '${utilization.toStringAsFixed(1)}%',
+                '${pct.toStringAsFixed(1)}%',
                 style: theme.textTheme.headlineMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: progressColor,
+                  fontWeight: FontWeight.w800,
+                  color: barColor,
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
-                ),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
-                  color: progressColor.withValues(alpha: 0.15),
+                  color: barColor.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
                   status,
                   style: theme.textTheme.labelMedium?.copyWith(
-                    color: progressColor,
-                    fontWeight: FontWeight.w600,
+                    color: barColor,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 14),
           ClipRRect(
             borderRadius: BorderRadius.circular(8),
             child: LinearProgressIndicator(
-              value: utilization / 100,
-              minHeight: 10,
-              backgroundColor: colorScheme.surfaceContainerHighest,
-              valueColor: AlwaysStoppedAnimation<Color>(progressColor),
+              value: pct / 100,
+              minHeight: 8,
+              backgroundColor: cs.surfaceContainerHighest,
+              valueColor: AlwaysStoppedAnimation<Color>(barColor),
             ),
           ),
           const SizedBox(height: 8),
-          Text(
-            'Percentage of available slots booked',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurfaceVariant,
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'Percentage of available slots booked',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: cs.onSurfaceVariant),
             ),
           ),
         ],

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../domain/entities/booking_entity.dart';
+import '../../domain/entities/regular_booking_entity.dart';
 import '../../domain/entities/slot_config_entity.dart';
 import '../../domain/entities/slot_entity.dart';
 import '../../domain/repositories/booking_repository.dart';
@@ -13,6 +14,37 @@ class BookingProvider extends ChangeNotifier {
 
   BookingProvider({required BookingRepository repository})
       : _repository = repository;
+
+  // ── Multi-tenant: current turf scope ───────────────────────────────────────
+  String? _turfId;
+  String? get turfId => _turfId;
+
+  /// Called by app glue (e.g., on AuthProvider user changes) to set the
+  /// active turf. Resetting the turf clears all cached state and refetches
+  /// the data the dashboard cares about (so the UI doesn't get stuck empty
+  /// from a race between page initState and the auth → turf sync).
+  void setTurfId(String? newTurfId) {
+    if (newTurfId == _turfId) return;
+    _turfId = newTurfId;
+    _slots = [];
+    _selectedSlot = null;
+    _userBookings = [];
+    _dateBookings = [];
+    _todayBookings = [];
+    _regulars = [];
+    _slotConfig = null;
+    _slotConfigState = SlotConfigState.initial;
+    notifyListeners();
+
+    if (newTurfId != null && newTurfId.isNotEmpty) {
+      // Fire-and-forget: refresh today's data and slot config for the new turf.
+      // The provider notifies listeners as each completes.
+      fetchSlotConfig();
+      fetchTodayBookings();
+    }
+  }
+
+  bool get _hasTurf => _turfId != null && _turfId!.isNotEmpty;
 
   BookingState _state = BookingState.initial;
   BookingState get state => _state;
@@ -33,6 +65,10 @@ class BookingProvider extends ChangeNotifier {
   List<BookingEntity> _dateBookings = [];
   List<BookingEntity> get dateBookings => _dateBookings;
 
+  // Admin home: today's bookings — independent of any selected date.
+  List<BookingEntity> _todayBookings = [];
+  List<BookingEntity> get todayBookings => _todayBookings;
+
   String? _errorMessage;
   String? get errorMessage => _errorMessage;
 
@@ -51,7 +87,6 @@ class BookingProvider extends ChangeNotifier {
 
   /// Select a date and fetch available slots
   Future<void> selectDate(DateTime date) async {
-    // Normalize to start of day
     _selectedDate = DateTime(date.year, date.month, date.day);
     _selectedSlot = null;
     await fetchSlotsForSelectedDate();
@@ -59,12 +94,13 @@ class BookingProvider extends ChangeNotifier {
 
   /// Fetch slots for the selected date
   Future<void> fetchSlotsForSelectedDate() async {
+    if (!_hasTurf) return;
     _state = BookingState.loading;
     _errorMessage = null;
     notifyListeners();
 
     try {
-      _slots = (await _repository.getSlotsForDate(_selectedDate))
+      _slots = (await _repository.getSlotsForDate(_turfId!, _selectedDate))
           .cast<SlotEntity>();
       _state = BookingState.loaded;
     } catch (e) {
@@ -75,7 +111,6 @@ class BookingProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Select a time slot
   void selectSlot(SlotEntity slot) {
     if (slot.isAvailable) {
       _selectedSlot = slot;
@@ -83,18 +118,22 @@ class BookingProvider extends ChangeNotifier {
     }
   }
 
-  /// Clear slot selection
   void clearSlotSelection() {
     _selectedSlot = null;
     notifyListeners();
   }
 
-  /// Create a booking
+  /// Create a booking with auto-calculated price based on time period
   Future<bool> createBooking({
     required String userId,
     required String userPhone,
     String? remarks,
   }) async {
+    if (!_hasTurf) {
+      _errorMessage = 'No turf selected';
+      notifyListeners();
+      return false;
+    }
     if (_selectedSlot == null) {
       _errorMessage = 'Please select a time slot';
       notifyListeners();
@@ -106,6 +145,9 @@ class BookingProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
+      final basePrice =
+          _slotConfig?.getPriceForHour(_selectedSlot!.startTime.hour);
+
       final booking = BookingEntity(
         userId: userId,
         userPhone: userPhone,
@@ -114,12 +156,13 @@ class BookingProvider extends ChangeNotifier {
         endTime: _selectedSlot!.endTime,
         remarks: remarks,
         status: BookingStatus.confirmed,
+        basePrice: basePrice,
+        turfId: _turfId,
       );
 
       _lastBooking = await _repository.createBooking(booking);
       _state = BookingState.success;
 
-      // Refresh slots after booking
       await fetchSlotsForSelectedDate();
       _selectedSlot = null;
 
@@ -135,8 +178,9 @@ class BookingProvider extends ChangeNotifier {
 
   /// Fetch user's bookings
   Future<void> fetchUserBookings(String userId) async {
+    if (!_hasTurf) return;
     try {
-      _userBookings = (await _repository.getUserBookings(userId))
+      _userBookings = (await _repository.getUserBookings(_turfId!, userId))
           .cast<BookingEntity>();
       notifyListeners();
     } catch (e) {
@@ -148,7 +192,6 @@ class BookingProvider extends ChangeNotifier {
   Future<bool> cancelBooking(String bookingId) async {
     try {
       await _repository.cancelBooking(bookingId);
-      // Refresh user bookings
       if (_userBookings.isNotEmpty) {
         final userId = _userBookings.first.userId;
         await fetchUserBookings(userId);
@@ -161,7 +204,6 @@ class BookingProvider extends ChangeNotifier {
     }
   }
 
-  /// Check if a date is today or in the future
   bool isDateSelectable(DateTime date) {
     final today = DateTime.now();
     final normalizedToday = DateTime(today.year, today.month, today.day);
@@ -171,15 +213,42 @@ class BookingProvider extends ChangeNotifier {
 
   // ============ Admin Methods ============
 
-  /// Fetch all bookings for the selected date (admin)
+  Future<void> fetchTodayBookings() async {
+    if (!_hasTurf) return;
+    try {
+      final today = DateTime.now();
+      _todayBookings = (await _repository.getBookingsForDate(
+              _turfId!, DateTime(today.year, today.month, today.day)))
+          .cast<BookingEntity>();
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error fetching today bookings: $e');
+    }
+  }
+
+  /// Auto-mark any past, non-cancelled, unpaid bookings as paid + completed.
+  /// Returns the number of bookings updated.
+  Future<int> sweepPastBookings() async {
+    if (!_hasTurf) return 0;
+    final updated = await _repository.sweepPastBookings(_turfId!);
+    if (updated > 0) {
+      // Refresh views that may have been affected.
+      await fetchTodayBookings();
+      if (_dateBookings.isNotEmpty) await fetchBookingsForSelectedDate();
+    }
+    return updated;
+  }
+
   Future<void> fetchBookingsForSelectedDate() async {
+    if (!_hasTurf) return;
     _state = BookingState.loading;
     _errorMessage = null;
     notifyListeners();
 
     try {
-      _dateBookings = (await _repository.getBookingsForDate(_selectedDate))
-          .cast<BookingEntity>();
+      _dateBookings =
+          (await _repository.getBookingsForDate(_turfId!, _selectedDate))
+              .cast<BookingEntity>();
       _state = BookingState.loaded;
     } catch (e) {
       _errorMessage = e.toString();
@@ -189,19 +258,22 @@ class BookingProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Create a booking as admin (bypasses one-booking limit)
   Future<bool> createAdminBooking(BookingEntity booking) async {
+    if (!_hasTurf) return false;
     _state = BookingState.creating;
     _errorMessage = null;
     notifyListeners();
 
     try {
-      _lastBooking = await _repository.createAdminBooking(booking);
+      // Force turfId on the booking — admins create within their own turf.
+      final scoped =
+          booking.turfId == _turfId ? booking : _withTurf(booking, _turfId!);
+      _lastBooking = await _repository.createAdminBooking(scoped);
       _state = BookingState.success;
 
-      // Refresh bookings and slots for the date
       await fetchBookingsForSelectedDate();
       await fetchSlotsForSelectedDate();
+      await fetchTodayBookings();
 
       notifyListeners();
       return true;
@@ -213,11 +285,32 @@ class BookingProvider extends ChangeNotifier {
     }
   }
 
-  /// Mark a booking as paid (admin)
+  BookingEntity _withTurf(BookingEntity b, String turfId) {
+    return BookingEntity(
+      id: b.id,
+      userId: b.userId,
+      userPhone: b.userPhone,
+      customerName: b.customerName,
+      date: b.date,
+      startTime: b.startTime,
+      endTime: b.endTime,
+      remarks: b.remarks,
+      status: b.status,
+      isPaid: b.isPaid,
+      basePrice: b.basePrice,
+      amountPaid: b.amountPaid,
+      paidAt: b.paidAt,
+      createdByAdmin: b.createdByAdmin,
+      createdAt: b.createdAt,
+      isRegular: b.isRegular,
+      regularBookingId: b.regularBookingId,
+      turfId: turfId,
+    );
+  }
+
   Future<bool> markAsPaid(String bookingId, double amount) async {
     try {
       await _repository.markBookingAsPaid(bookingId, amount);
-      // Refresh bookings for the date
       await fetchBookingsForSelectedDate();
       return true;
     } catch (e) {
@@ -227,11 +320,10 @@ class BookingProvider extends ChangeNotifier {
     }
   }
 
-  /// Update booking status (admin)
-  Future<bool> updateBookingStatus(String bookingId, BookingStatus status) async {
+  Future<bool> updateBookingStatus(
+      String bookingId, BookingStatus status) async {
     try {
       await _repository.updateBookingStatus(bookingId, status);
-      // Refresh bookings for the date
       await fetchBookingsForSelectedDate();
       return true;
     } catch (e) {
@@ -241,7 +333,6 @@ class BookingProvider extends ChangeNotifier {
     }
   }
 
-  /// Reset state
   void reset() {
     _state = BookingState.initial;
     _selectedDate = DateTime.now();
@@ -254,14 +345,14 @@ class BookingProvider extends ChangeNotifier {
 
   // ============ Slot Configuration Methods ============
 
-  /// Fetch slot configuration
   Future<void> fetchSlotConfig() async {
+    if (!_hasTurf) return;
     _slotConfigState = SlotConfigState.loading;
     _slotConfigError = null;
     notifyListeners();
 
     try {
-      _slotConfig = await _repository.getSlotConfig();
+      _slotConfig = await _repository.getSlotConfig(_turfId!);
       _slotConfigState = SlotConfigState.loaded;
     } catch (e) {
       _slotConfigError = e.toString().replaceAll('Exception: ', '');
@@ -271,16 +362,14 @@ class BookingProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Toggle a slot hour on/off
   Future<bool> toggleSlotHour(int hour, String adminId) async {
-    if (_slotConfig == null) return false;
+    if (!_hasTurf || _slotConfig == null) return false;
 
     _slotConfigState = SlotConfigState.saving;
     notifyListeners();
 
     try {
       final currentHours = List<int>.from(_slotConfig!.enabledHours);
-
       if (currentHours.contains(hour)) {
         currentHours.remove(hour);
       } else {
@@ -288,11 +377,13 @@ class BookingProvider extends ChangeNotifier {
         currentHours.sort();
       }
 
-      await _repository.updateSlotConfig(currentHours, adminId);
+      await _repository.updateSlotConfig(_turfId!, currentHours, adminId);
 
-      // Update local state
       _slotConfig = SlotConfigEntity(
         enabledHours: currentHours,
+        morningPrice: _slotConfig!.morningPrice,
+        dayPrice: _slotConfig!.dayPrice,
+        eveningPrice: _slotConfig!.eveningPrice,
         updatedAt: DateTime.now(),
         updatedBy: adminId,
       );
@@ -307,11 +398,149 @@ class BookingProvider extends ChangeNotifier {
     }
   }
 
-  /// Check if a specific hour is enabled
-  bool isHourEnabled(int hour) {
-    return _slotConfig?.isHourEnabled(hour) ?? true;
+  Future<bool> updateSlotPricing({
+    required double morningPrice,
+    required double dayPrice,
+    required double eveningPrice,
+    required String adminId,
+  }) async {
+    if (!_hasTurf || _slotConfig == null) return false;
+
+    _slotConfigState = SlotConfigState.saving;
+    notifyListeners();
+
+    try {
+      await _repository.updateSlotPricing(
+        turfId: _turfId!,
+        morningPrice: morningPrice,
+        dayPrice: dayPrice,
+        eveningPrice: eveningPrice,
+        updatedBy: adminId,
+      );
+
+      _slotConfig = SlotConfigEntity(
+        enabledHours: _slotConfig!.enabledHours,
+        morningPrice: morningPrice,
+        dayPrice: dayPrice,
+        eveningPrice: eveningPrice,
+        updatedAt: DateTime.now(),
+        updatedBy: adminId,
+      );
+      _slotConfigState = SlotConfigState.loaded;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _slotConfigError = e.toString().replaceAll('Exception: ', '');
+      _slotConfigState = SlotConfigState.error;
+      notifyListeners();
+      return false;
+    }
   }
 
-  /// Get all possible slot hours
+  double? getPriceForHour(int hour) => _slotConfig?.getPriceForHour(hour);
+  SlotPeriod? getPeriodForHour(int hour) => _slotConfig?.getPeriodForHour(hour);
+  bool isHourEnabled(int hour) => _slotConfig?.isHourEnabled(hour) ?? true;
   List<int> get allPossibleHours => SlotConfigEntity.allPossibleHours;
+
+  // ============ Regular Bookings ============
+
+  List<RegularBookingEntity> _regulars = [];
+  List<RegularBookingEntity> get regulars => _regulars;
+
+  bool _regularsLoading = false;
+  bool get regularsLoading => _regularsLoading;
+
+  String? _regularsError;
+  String? get regularsError => _regularsError;
+
+  Future<void> fetchRegularBookings() async {
+    if (!_hasTurf) return;
+    _regularsLoading = true;
+    _regularsError = null;
+    notifyListeners();
+    try {
+      _regulars = await _repository.getRegularBookings(_turfId!);
+    } catch (e) {
+      _regularsError = e.toString().replaceAll('Exception: ', '');
+    } finally {
+      _regularsLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> createRegularBooking({
+    required String customerName,
+    required String userPhone,
+    required List<int> daysOfWeek,
+    required int startHour,
+    required DateTime startDate,
+    String? notes,
+    required String adminId,
+  }) async {
+    if (!_hasTurf) return false;
+    try {
+      final basePrice = _slotConfig?.getPriceForHour(startHour) ?? 0;
+      final entity = RegularBookingEntity(
+        customerName: customerName,
+        userPhone: userPhone,
+        daysOfWeek: daysOfWeek,
+        startHour: startHour,
+        basePrice: basePrice,
+        startDate: DateTime(startDate.year, startDate.month, startDate.day),
+        isActive: true,
+        notes: notes,
+        createdByAdmin: adminId,
+        turfId: _turfId,
+      );
+      final created = await _repository.createRegularBooking(entity);
+      _regulars = [created, ..._regulars];
+      if (created.appliesTo(_selectedDate)) {
+        await fetchBookingsForSelectedDate();
+        await fetchSlotsForSelectedDate();
+      }
+      if (created.appliesTo(DateTime.now())) {
+        await fetchTodayBookings();
+      }
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _regularsError = e.toString().replaceAll('Exception: ', '');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> deleteRegularBooking(String id) async {
+    try {
+      await _repository.deleteRegularBooking(id);
+      _regulars = _regulars.where((r) => r.id != id).toList();
+      await fetchBookingsForSelectedDate();
+      await fetchSlotsForSelectedDate();
+      await fetchTodayBookings();
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _regularsError = e.toString().replaceAll('Exception: ', '');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> setRegularBookingActive(String id, bool isActive) async {
+    try {
+      await _repository.setRegularBookingActive(id, isActive);
+      _regulars = _regulars
+          .map((r) => r.id == id ? r.copyWith(isActive: isActive) : r)
+          .toList();
+      await fetchBookingsForSelectedDate();
+      await fetchSlotsForSelectedDate();
+      await fetchTodayBookings();
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _regularsError = e.toString().replaceAll('Exception: ', '');
+      notifyListeners();
+      return false;
+    }
+  }
 }

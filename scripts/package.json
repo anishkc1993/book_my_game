@@ -1,0 +1,12 @@
+{
+  "name": "bmg-scripts",
+  "version": "1.0.0",
+  "description": "One-off Firestore migration / admin scripts for Book My Game.",
+  "private": true,
+  "scripts": {
+    "migrate:multi-tenant": "node migrate-to-multi-tenant.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.0.0"
+  }
+}

@@ -5,7 +5,7 @@ import '../../../../core/constants/app_constants.dart';
 import '../../domain/entities/analytics_entity.dart';
 
 abstract class AnalyticsRemoteDataSource {
-  Future<AnalyticsEntity> getAnalytics(TimePeriod period);
+  Future<AnalyticsEntity> getAnalytics(String turfId, TimePeriod period);
 }
 
 class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
@@ -39,12 +39,12 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
   }
 
   @override
-  Future<AnalyticsEntity> getAnalytics(TimePeriod period) async {
+  Future<AnalyticsEntity> getAnalytics(String turfId, TimePeriod period) async {
     try {
-      debugPrint('📊 getAnalytics: Fetching analytics for $period');
+      debugPrint('📊 getAnalytics: turf=$turfId period=$period');
 
       final dateKeys = _getDateKeysForPeriod(period);
-      final bookings = await _fetchBookingsForDateKeys(dateKeys);
+      final bookings = await _fetchBookingsForDateKeys(turfId, dateKeys);
 
       debugPrint('📊 getAnalytics: Found ${bookings.length} bookings');
 
@@ -56,16 +56,19 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
   }
 
   Future<List<Map<String, dynamic>>> _fetchBookingsForDateKeys(
+    String turfId,
     List<String> dateKeys,
   ) async {
     final allBookings = <Map<String, dynamic>>[];
 
-    // Firestore whereIn has a limit of 10 items, so we batch the queries
+    // Firestore whereIn has a limit of 10 items, so we batch the queries.
+    // turfId filter is required by multi-tenant security rules.
     const batchSize = 10;
     for (var i = 0; i < dateKeys.length; i += batchSize) {
       final batch = dateKeys.skip(i).take(batchSize).toList();
       final snapshot = await _firestore
           .collection(AppConstants.bookingsCollection)
+          .where('turfId', isEqualTo: turfId)
           .where('dateKey', whereIn: batch)
           .get();
 
@@ -94,8 +97,8 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
     int cancelledBookings = 0;
     int completedBookings = 0;
 
-    // Customer tracking
-    final customerIds = <String>{};
+    // Customer tracking - use phone number for uniqueness
+    final customerPhones = <String>{};
     final customerBookingCounts = <String, int>{};
 
     // Hourly distribution
@@ -117,7 +120,7 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
       final status = booking['status'] as String?;
       final isPaid = booking['isPaid'] as bool? ?? false;
       final amountPaid = (booking['amountPaid'] as num?)?.toDouble() ?? 0;
-      final userId = booking['userId'] as String?;
+      final userPhone = booking['userPhone'] as String?;
       final dateKey = booking['dateKey'] as String?;
 
       // Parse startTime to get hour
@@ -154,11 +157,11 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
           break;
       }
 
-      // Customer tracking
-      if (userId != null && userId.isNotEmpty) {
-        customerIds.add(userId);
-        customerBookingCounts[userId] =
-            (customerBookingCounts[userId] ?? 0) + 1;
+      // Customer tracking - use phone number for uniqueness
+      if (userPhone != null && userPhone.isNotEmpty) {
+        customerPhones.add(userPhone);
+        customerBookingCounts[userPhone] =
+            (customerBookingCounts[userPhone] ?? 0) + 1;
       }
 
       // Hourly distribution (only for active bookings)
@@ -190,7 +193,7 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
     }
 
     // Calculate derived metrics
-    final uniqueCustomers = customerIds.length;
+    final uniqueCustomers = customerPhones.length;
     final repeatCustomers =
         customerBookingCounts.values.where((count) => count > 1).length;
     final newCustomers = uniqueCustomers - repeatCustomers;

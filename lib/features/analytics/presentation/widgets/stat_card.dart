@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../../core/theme/app_theme.dart';
+
 class StatCard extends StatelessWidget {
   final String label;
   final String value;
@@ -21,14 +23,15 @@ class StatCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final effectiveIconColor = iconColor ?? colorScheme.primary;
+    final cs = theme.colorScheme;
+    final effectiveIconColor = iconColor ?? AppColors.brandGreen;
 
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerLow,
+        color: cs.surfaceContainerLow,
         borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.5)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -38,27 +41,21 @@ class StatCard extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: effectiveIconColor.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(8),
+                  color: effectiveIconColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
                 ),
-                child: Icon(
-                  icon,
-                  size: 20,
-                  color: effectiveIconColor,
-                ),
+                child: Icon(icon, size: 20, color: effectiveIconColor),
               ),
               const Spacer(),
               if (trend != null)
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
                     color: isTrendPositive
-                        ? Colors.green.withValues(alpha: 0.15)
-                        : Colors.red.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(12),
+                        ? AppColors.brandGreen.withValues(alpha: 0.12)
+                        : cs.error.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(20),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -67,15 +64,15 @@ class StatCard extends StatelessWidget {
                         isTrendPositive
                             ? Icons.trending_up_rounded
                             : Icons.trending_down_rounded,
-                        size: 14,
-                        color: isTrendPositive ? Colors.green : Colors.red,
+                        size: 13,
+                        color: isTrendPositive ? AppColors.brandGreen : cs.error,
                       ),
-                      const SizedBox(width: 4),
+                      const SizedBox(width: 3),
                       Text(
                         trend!,
                         style: theme.textTheme.labelSmall?.copyWith(
-                          color: isTrendPositive ? Colors.green : Colors.red,
-                          fontWeight: FontWeight.w600,
+                          color: isTrendPositive ? AppColors.brandGreen : cs.error,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
                     ],
@@ -83,18 +80,19 @@ class StatCard extends StatelessWidget {
                 ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 14),
           Text(
             value,
             style: theme.textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.bold,
+              fontWeight: FontWeight.w800,
+              color: cs.onSurface,
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 3),
           Text(
             label,
             style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurfaceVariant,
+              color: cs.onSurfaceVariant,
             ),
           ),
         ],
@@ -118,31 +116,34 @@ class MiniStatCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
+    final cs = theme.colorScheme;
 
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
         decoration: BoxDecoration(
-          color: colorScheme.surfaceContainerLow,
+          color: cs.surfaceContainerLow,
           borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.5)),
         ),
         child: Column(
           children: [
             Text(
               value,
               style: theme.textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-                color: valueColor,
+                fontWeight: FontWeight.w800,
+                color: valueColor ?? cs.onSurface,
               ),
             ),
-            const SizedBox(height: 2),
+            const SizedBox(height: 3),
             Text(
               label,
               style: theme.textTheme.labelSmall?.copyWith(
-                color: colorScheme.onSurfaceVariant,
+                color: cs.onSurfaceVariant,
               ),
               textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ],
         ),

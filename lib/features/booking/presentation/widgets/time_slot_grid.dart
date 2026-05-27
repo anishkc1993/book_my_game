@@ -1,17 +1,21 @@
 import 'package:flutter/material.dart';
 
+import '../../../../core/theme/app_theme.dart';
+import '../../domain/entities/slot_config_entity.dart';
 import '../../domain/entities/slot_entity.dart';
 
 class TimeSlotGrid extends StatelessWidget {
   final List<SlotEntity> slots;
   final SlotEntity? selectedSlot;
   final Function(SlotEntity) onSlotSelected;
+  final SlotConfigEntity? slotConfig;
 
   const TimeSlotGrid({
     super.key,
     required this.slots,
     required this.selectedSlot,
     required this.onSlotSelected,
+    this.slotConfig,
   });
 
   @override
@@ -25,12 +29,12 @@ class TimeSlotGrid extends StatelessWidget {
               Icon(
                 Icons.event_busy_rounded,
                 size: 48,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.4),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               Text(
                 'No slots available',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
@@ -45,17 +49,19 @@ class TimeSlotGrid extends StatelessWidget {
       physics: const NeverScrollableScrollPhysics(),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 2,
-        childAspectRatio: 2.5,
-        crossAxisSpacing: 12,
-        mainAxisSpacing: 12,
+        childAspectRatio: 1.9,
+        crossAxisSpacing: 10,
+        mainAxisSpacing: 10,
       ),
       itemCount: slots.length,
       itemBuilder: (context, index) {
         final slot = slots[index];
+        final price = slotConfig?.getPriceForHour(slot.startTime.hour);
         return TimeSlotCard(
           slot: slot,
           isSelected: selectedSlot?.id == slot.id,
           onTap: () => onSlotSelected(slot),
+          price: price,
         );
       },
     );
@@ -66,123 +72,178 @@ class TimeSlotCard extends StatelessWidget {
   final SlotEntity slot;
   final bool isSelected;
   final VoidCallback onTap;
+  final double? price;
 
   const TimeSlotCard({
     super.key,
     required this.slot,
     required this.isSelected,
     required this.onTap,
+    this.price,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
+    final cs = theme.colorScheme;
 
+    final isPast = slot.isUnavailable;
+    final isBooked = slot.isBooked || slot.isBlocked;
     final isAvailable = slot.isAvailable;
-    final isBooked = slot.isBooked;
-    final isUnavailable = slot.isUnavailable;
 
-    Color backgroundColor;
+    // Determine visual state
+    Color bgColor;
     Color borderColor;
-    Color textColor;
-    Color iconColor;
-    String statusText;
-    IconData statusIcon;
+    Widget leftIndicator;
+    Color timeColor;
+    Color labelColor;
+    String labelText;
+    Widget? rightWidget;
 
     if (isSelected) {
-      backgroundColor = colorScheme.primary;
-      borderColor = colorScheme.primary;
-      textColor = colorScheme.onPrimary;
-      iconColor = colorScheme.onPrimary;
-      statusText = 'Selected';
-      statusIcon = Icons.check_circle_rounded;
-    } else if (isUnavailable) {
-      // Past time slots
-      backgroundColor = colorScheme.surfaceContainerLow.withValues(alpha: 0.5);
-      borderColor = colorScheme.outlineVariant.withValues(alpha: 0.3);
-      textColor = colorScheme.onSurface.withValues(alpha: 0.4);
-      iconColor = colorScheme.onSurfaceVariant.withValues(alpha: 0.4);
-      statusText = 'Passed';
-      statusIcon = Icons.history_rounded;
+      bgColor = AppColors.brandGreen;
+      borderColor = AppColors.brandGreen;
+      timeColor = Colors.white;
+      labelColor = Colors.white70;
+      labelText = 'Selected';
+      leftIndicator = Container(
+        width: 7,
+        height: 7,
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          shape: BoxShape.circle,
+        ),
+      );
+      rightWidget = Container(
+        width: 18,
+        height: 18,
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          shape: BoxShape.circle,
+        ),
+        child: const Icon(
+          Icons.check_rounded,
+          size: 12,
+          color: AppColors.brandGreen,
+        ),
+      );
+    } else if (isPast) {
+      bgColor = AppColors.brandGreen.withValues(alpha: 0.06);
+      borderColor = AppColors.brandGreen.withValues(alpha: 0.15);
+      timeColor = AppColors.brandGreen.withValues(alpha: 0.5);
+      labelColor = AppColors.brandGreen.withValues(alpha: 0.4);
+      labelText = 'Past';
+      leftIndicator = Icon(
+        Icons.history_rounded,
+        size: 14,
+        color: AppColors.brandGreen.withValues(alpha: 0.4),
+      );
+      rightWidget = null;
     } else if (isBooked) {
-      backgroundColor = colorScheme.errorContainer.withValues(alpha: 0.3);
-      borderColor = colorScheme.error.withValues(alpha: 0.3);
-      textColor = colorScheme.onSurface.withValues(alpha: 0.5);
-      iconColor = colorScheme.error.withValues(alpha: 0.5);
-      statusText = 'Booked';
-      statusIcon = Icons.event_busy_rounded;
+      bgColor = cs.error.withValues(alpha: 0.06);
+      borderColor = cs.error.withValues(alpha: 0.2);
+      timeColor = cs.onSurface.withValues(alpha: 0.45);
+      labelColor = cs.error.withValues(alpha: 0.7);
+      labelText = 'Booked';
+      leftIndicator = Icon(
+        Icons.lock_rounded,
+        size: 14,
+        color: cs.error.withValues(alpha: 0.6),
+      );
+      rightWidget = null;
     } else if (isAvailable) {
-      backgroundColor = colorScheme.surfaceContainerLow;
-      borderColor = Colors.green.withValues(alpha: 0.3);
-      textColor = colorScheme.onSurface;
-      iconColor = Colors.green;
-      statusText = 'Available';
-      statusIcon = Icons.access_time_rounded;
+      bgColor = cs.surfaceContainerLow;
+      borderColor = cs.outlineVariant;
+      timeColor = cs.onSurface;
+      labelColor = AppColors.brandGreen;
+      labelText = price != null ? 'Rs. ${price!.toInt()}' : 'Available';
+      leftIndicator = Container(
+        width: 7,
+        height: 7,
+        decoration: const BoxDecoration(
+          color: AppColors.brandGreen,
+          shape: BoxShape.circle,
+        ),
+      );
+      rightWidget = Container(
+        width: 18,
+        height: 18,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: cs.outlineVariant,
+            width: 1.5,
+          ),
+        ),
+      );
     } else {
-      backgroundColor = colorScheme.surfaceContainerLow;
-      borderColor = colorScheme.outlineVariant;
-      textColor = colorScheme.onSurface.withValues(alpha: 0.5);
-      iconColor = colorScheme.onSurfaceVariant;
-      statusText = 'Blocked';
-      statusIcon = Icons.block_rounded;
+      // Fallback (blocked)
+      bgColor = cs.surfaceContainerLow.withValues(alpha: 0.5);
+      borderColor = cs.outlineVariant.withValues(alpha: 0.3);
+      timeColor = cs.onSurface.withValues(alpha: 0.35);
+      labelColor = cs.onSurface.withValues(alpha: 0.25);
+      labelText = 'Blocked';
+      leftIndicator = Icon(
+        Icons.block_rounded,
+        size: 14,
+        color: cs.onSurface.withValues(alpha: 0.25),
+      );
+      rightWidget = null;
     }
 
     return Material(
-      color: backgroundColor,
-      borderRadius: BorderRadius.circular(16),
+      color: bgColor,
+      borderRadius: BorderRadius.circular(14),
       child: InkWell(
         onTap: isAvailable ? onTap : null,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
         child: Container(
           decoration: BoxDecoration(
             border: Border.all(color: borderColor, width: 1.5),
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(14),
           ),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           child: Row(
             children: [
-              // Status Icon
-              Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: iconColor.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Icon(
-                  statusIcon,
-                  size: 18,
-                  color: iconColor,
-                ),
-              ),
-              const SizedBox(width: 10),
-              // Time Text
+              // Left indicator (dot or icon)
+              leftIndicator,
+              const SizedBox(width: 8),
+              // Center: time + label
               Expanded(
                 child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Text(
                       slot.timeRange,
                       style: theme.textTheme.titleSmall?.copyWith(
-                        color: textColor,
-                        fontWeight: FontWeight.w600,
+                        color: timeColor,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
                       ),
+                      overflow: TextOverflow.ellipsis,
                     ),
+                    const SizedBox(height: 2),
                     Text(
-                      statusText,
+                      labelText,
                       style: theme.textTheme.labelSmall?.copyWith(
-                        color: textColor.withValues(alpha: 0.7),
+                        color: labelColor,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ],
                 ),
               ),
+              // Right: radio circle or check
+              if (rightWidget != null) ...[
+                const SizedBox(width: 6),
+                rightWidget,
+              ],
             ],
           ),
         ),
       ),
     );
   }
-
 }

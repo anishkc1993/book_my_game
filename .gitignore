@@ -48,4 +48,8 @@ app.*.map.json
 android/app/google-services.json
 android/app/src/google-services.json
 ios/Runner/GoogleService-Info.plist
+
+# Service account keys (used by scripts/, never commit)
+serviceAccount.json
+scripts/node_modules/
 local.properties

@@ -4,8 +4,10 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../../../../core/constants/app_constants.dart';
+import '../../../../core/theme/app_theme.dart';
 import '../../../../core/utils/validators.dart';
 import '../providers/auth_provider.dart';
+import 'email_input_page.dart';
 
 class PhoneInputPage extends StatefulWidget {
   const PhoneInputPage({super.key});
@@ -23,7 +25,7 @@ class _PhoneInputPageState extends State<PhoneInputPage> {
   @override
   void initState() {
     super.initState();
-    // Listen to auth status changes for async callbacks (important for Android)
+    // Listener pattern required for Android async OTP callbacks
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AuthProvider>().addListener(_onAuthStatusChanged);
     });
@@ -31,12 +33,9 @@ class _PhoneInputPageState extends State<PhoneInputPage> {
 
   @override
   void dispose() {
-    // Remove listener to avoid memory leaks
     try {
       context.read<AuthProvider>().removeListener(_onAuthStatusChanged);
-    } catch (_) {
-      // Context might not be available during dispose
-    }
+    } catch (_) {}
     _phoneController.dispose();
     _focusNode.dispose();
     super.dispose();
@@ -44,45 +43,35 @@ class _PhoneInputPageState extends State<PhoneInputPage> {
 
   void _onAuthStatusChanged() {
     if (!mounted) return;
-    final authProvider = context.read<AuthProvider>();
+    final auth = context.read<AuthProvider>();
 
-    if (authProvider.status == AuthStatus.otpSent && _pendingPhoneNumber != null) {
+    if (auth.status == AuthStatus.otpSent && _pendingPhoneNumber != null) {
       final phone = _pendingPhoneNumber!;
       _pendingPhoneNumber = null;
       context.push(RoutePaths.otpVerification, extra: phone);
-    } else if (authProvider.status == AuthStatus.authenticated) {
-      // Auto-verified on Android
+    } else if (auth.status == AuthStatus.authenticated) {
       _pendingPhoneNumber = null;
       context.go(RoutePaths.home);
-    } else if (authProvider.status == AuthStatus.error && _pendingPhoneNumber != null) {
+    } else if (auth.status == AuthStatus.error && _pendingPhoneNumber != null) {
       _pendingPhoneNumber = null;
-      _showError(authProvider.errorMessage ?? 'Failed to send OTP');
+      _showError(auth.errorMessage ?? 'Failed to send OTP');
     }
   }
 
   void _validateAndSubmit() {
     final error = Validators.validatePhoneNumber(_phoneController.text);
-    setState(() {
-      _phoneError = error;
-    });
-
-    if (error == null) {
-      _sendOtp();
-    }
+    setState(() => _phoneError = error);
+    if (error == null) _sendOtp();
   }
 
   Future<void> _sendOtp() async {
-    final authProvider = context.read<AuthProvider>();
+    final auth = context.read<AuthProvider>();
     final phoneNumber = Validators.formatPhoneNumber(
       _phoneController.text,
       countryCode: AppConstants.defaultCountryCode,
     );
-
     _pendingPhoneNumber = phoneNumber;
-    await authProvider.sendOtp(phoneNumber);
-
-    // Note: Navigation is now handled by _onAuthStatusChanged listener
-    // This is important for Android where callbacks are async
+    await auth.sendOtp(phoneNumber);
   }
 
   void _showError(String message) {
@@ -100,182 +89,293 @@ class _PhoneInputPageState extends State<PhoneInputPage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
+    final cs = theme.colorScheme;
 
     return Scaffold(
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 24),
+          padding: const EdgeInsets.symmetric(horizontal: 22),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SizedBox(height: 60),
+              const SizedBox(height: 24),
 
-              // Icon with gradient background
+              // BMG logo
               Container(
-                width: 80,
-                height: 80,
+                width: 44,
+                height: 44,
                 decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      colorScheme.primaryContainer,
-                      colorScheme.secondaryContainer,
-                    ],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
+                  color: AppColors.brandGreen,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Center(
+                  child: Text(
+                    'BMG.',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.3,
+                    ),
                   ),
-                  borderRadius: BorderRadius.circular(24),
-                ),
-                child: Icon(
-                  Icons.phone_android_rounded,
-                  size: 40,
-                  color: colorScheme.onPrimaryContainer,
                 ),
               ),
 
-              const SizedBox(height: 32),
+              const SizedBox(height: 20),
 
-              // Title
-              Text(
-                'Welcome',
-                style: theme.textTheme.headlineLarge?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: colorScheme.onSurface,
-                ),
-              ),
-
-              const SizedBox(height: 8),
-
-              // Subtitle
-              Text(
-                'Enter your phone number to continue. We\'ll send you a verification code.',
-                style: theme.textTheme.bodyLarge?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                  height: 1.5,
-                ),
-              ),
-
-              const SizedBox(height: 48),
-
-              // Phone Input Card
+              // Hero card — always dark green
               Container(
-                padding: const EdgeInsets.all(20),
+                width: double.infinity,
+                padding: const EdgeInsets.all(22),
                 decoration: BoxDecoration(
-                  color: colorScheme.surfaceContainerLow,
-                  borderRadius: BorderRadius.circular(24),
+                  color: AppColors.heroCardBg,
+                  borderRadius: BorderRadius.circular(20),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Phone Number',
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                        fontWeight: FontWeight.w600,
+                    // Badge
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: AppColors.brandGreen.withValues(alpha: 0.35),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: const BoxDecoration(
+                              color: AppColors.limeAccent,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 7),
+                          const Text(
+                            'BOOK IN 30 SECONDS',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.8,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
+
+                    const SizedBox(height: 16),
+
+                    RichText(
+                      text: const TextSpan(
+                        children: [
+                          TextSpan(
+                            text: 'Lock the pitch.\n',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 30,
+                              fontWeight: FontWeight.w800,
+                              height: 1.15,
+                            ),
+                          ),
+                          TextSpan(
+                            text: 'Play.',
+                            style: TextStyle(
+                              color: AppColors.limeAccent,
+                              fontSize: 30,
+                              fontWeight: FontWeight.w800,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
                     const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        // Country Code
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 18,
-                          ),
-                          decoration: BoxDecoration(
-                            color: colorScheme.surfaceContainerHighest,
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: Text(
-                            AppConstants.defaultCountryCode,
-                            style: theme.textTheme.bodyLarge?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        // Phone Input
-                        Expanded(
-                          child: TextFormField(
-                            controller: _phoneController,
-                            focusNode: _focusNode,
-                            keyboardType: TextInputType.phone,
-                            textInputAction: TextInputAction.done,
-                            style: theme.textTheme.bodyLarge?.copyWith(
-                              fontWeight: FontWeight.w500,
-                              letterSpacing: 1.2,
-                            ),
-                            inputFormatters: [
-                              FilteringTextInputFormatter.digitsOnly,
-                              LengthLimitingTextInputFormatter(15),
-                            ],
-                            decoration: InputDecoration(
-                              hintText: '98XXXXXXXX',
-                              hintStyle: TextStyle(
-                                color: colorScheme.onSurfaceVariant.withOpacity(0.5),
-                              ),
-                              errorText: _phoneError,
-                            ),
-                            onChanged: (_) {
-                              if (_phoneError != null) {
-                                setState(() => _phoneError = null);
-                              }
-                            },
-                            onFieldSubmitted: (_) => _validateAndSubmit(),
-                          ),
-                        ),
-                      ],
+
+                    const Text(
+                      '6-a-side futsal. 1 hour slots. We\'ll text\nyou when the goal mats are warm.',
+                      style: TextStyle(
+                        color: Colors.white54,
+                        fontSize: 13,
+                        height: 1.55,
+                      ),
                     ),
                   ],
                 ),
               ),
 
-              const SizedBox(height: 32),
+              const SizedBox(height: 28),
 
-              // Continue Button
-              Consumer<AuthProvider>(
-                builder: (context, authProvider, child) {
-                  final isLoading = authProvider.isLoading;
+              Text(
+                'MOBILE NUMBER',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: cs.onSurfaceVariant,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.2,
+                ),
+              ),
 
-                  return FilledButton(
-                    onPressed: isLoading ? null : _validateAndSubmit,
-                    child: isLoading
-                        ? SizedBox(
-                            height: 24,
-                            width: 24,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2.5,
-                              color: colorScheme.onPrimary,
-                            ),
-                          )
-                        : const Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Text('Continue'),
-                              SizedBox(width: 8),
-                              Icon(Icons.arrow_forward_rounded, size: 20),
-                            ],
+              const SizedBox(height: 10),
+
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Country code chip
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+                    decoration: BoxDecoration(
+                      color: cs.surfaceContainerLow,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: cs.outlineVariant),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text('🇳🇵', style: TextStyle(fontSize: 18)),
+                        const SizedBox(width: 6),
+                        Text(
+                          '+977',
+                          style: theme.textTheme.bodyLarge?.copyWith(
+                            fontWeight: FontWeight.w600,
                           ),
-                  );
-                },
+                        ),
+                        const SizedBox(width: 4),
+                        Icon(Icons.keyboard_arrow_down_rounded,
+                            size: 18, color: cs.onSurfaceVariant),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextFormField(
+                      controller: _phoneController,
+                      focusNode: _focusNode,
+                      keyboardType: TextInputType.phone,
+                      textInputAction: TextInputAction.done,
+                      style: theme.textTheme.bodyLarge?.copyWith(
+                        fontWeight: FontWeight.w500,
+                        letterSpacing: 1.0,
+                      ),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                        LengthLimitingTextInputFormatter(10),
+                      ],
+                      decoration: InputDecoration(
+                        hintText: '98XXX XXXXX',
+                        errorText: _phoneError,
+                      ),
+                      onChanged: (_) {
+                        if (_phoneError != null) setState(() => _phoneError = null);
+                      },
+                      onFieldSubmitted: (_) => _validateAndSubmit(),
+                    ),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 10),
+
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 3),
+                    child: Icon(Icons.info_outline_rounded,
+                        size: 13,
+                        color: cs.onSurfaceVariant.withValues(alpha: 0.5)),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      "We'll send a 6-digit code. Standard SMS rates apply.",
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: cs.onSurfaceVariant.withValues(alpha: 0.5),
+                      ),
+                    ),
+                  ),
+                ],
               ),
 
               const SizedBox(height: 24),
 
-              // Terms text
+              Consumer<AuthProvider>(
+                builder: (context, auth, _) => FilledButton(
+                  onPressed: auth.isLoading ? null : _validateAndSubmit,
+                  child: auth.isLoading
+                      ? SizedBox(
+                          height: 22,
+                          width: 22,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2.5, color: cs.onPrimary),
+                        )
+                      : const Text('Continue'),
+                ),
+              ),
+
+              const SizedBox(height: 18),
+
+              Row(
+                children: [
+                  Expanded(child: Divider(color: cs.outlineVariant)),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                    child: Text(
+                      'OR',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: cs.onSurfaceVariant,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  Expanded(child: Divider(color: cs.outlineVariant)),
+                ],
+              ),
+
+              const SizedBox(height: 18),
+
+              OutlinedButton.icon(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const EmailInputPage()),
+                ),
+                icon: const Icon(Icons.person_outline_rounded, size: 20),
+                label: const Text('Continue as guest'),
+              ),
+
+              const SizedBox(height: 24),
+
               Center(
-                child: Text(
-                  'By continuing, you agree to our Terms of Service\nand Privacy Policy',
+                child: RichText(
                   textAlign: TextAlign.center,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                    height: 1.5,
+                  text: TextSpan(
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: cs.onSurfaceVariant.withValues(alpha: 0.55),
+                    ),
+                    children: [
+                      const TextSpan(text: 'By continuing you agree to our '),
+                      TextSpan(
+                        text: 'Terms',
+                        style: TextStyle(
+                          color: cs.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const TextSpan(text: ' and '),
+                      TextSpan(
+                        text: 'Privacy Policy',
+                        style: TextStyle(
+                          color: cs.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
 
-              const SizedBox(height: 40),
+              const SizedBox(height: 32),
             ],
           ),
         ),

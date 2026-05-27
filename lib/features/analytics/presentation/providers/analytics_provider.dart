@@ -11,6 +11,21 @@ class AnalyticsProvider extends ChangeNotifier {
   AnalyticsProvider({required AnalyticsRepository repository})
       : _repository = repository;
 
+  // Multi-tenant: current turf scope (set via app glue from AuthProvider).
+  String? _turfId;
+  String? get turfId => _turfId;
+
+  void setTurfId(String? newTurfId) {
+    if (newTurfId == _turfId) return;
+    _turfId = newTurfId;
+    _analyticsCache.clear();
+    _state = AnalyticsState.initial;
+    _errorMessage = null;
+    notifyListeners();
+  }
+
+  bool get _hasTurf => _turfId != null && _turfId!.isNotEmpty;
+
   AnalyticsState _state = AnalyticsState.initial;
   String? _errorMessage;
   TimePeriod _selectedPeriod = TimePeriod.today;
@@ -25,7 +40,8 @@ class AnalyticsProvider extends ChangeNotifier {
   AnalyticsEntity? get currentAnalytics => _analyticsCache[_selectedPeriod];
 
   Future<void> fetchAnalytics({bool forceRefresh = false}) async {
-    // Return cached data if available and not forcing refresh
+    if (!_hasTurf) return;
+
     if (!forceRefresh && _analyticsCache.containsKey(_selectedPeriod)) {
       _state = AnalyticsState.loaded;
       notifyListeners();
@@ -37,7 +53,8 @@ class AnalyticsProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final analytics = await _repository.getAnalytics(_selectedPeriod);
+      final analytics =
+          await _repository.getAnalytics(_turfId!, _selectedPeriod);
       _analyticsCache[_selectedPeriod] = analytics;
       _state = AnalyticsState.loaded;
     } catch (e) {

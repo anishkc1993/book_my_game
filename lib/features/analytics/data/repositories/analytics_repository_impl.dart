@@ -8,7 +8,7 @@ class AnalyticsRepositoryImpl implements AnalyticsRepository {
   AnalyticsRepositoryImpl({required this.remoteDataSource});
 
   @override
-  Future<AnalyticsEntity> getAnalytics(TimePeriod period) {
-    return remoteDataSource.getAnalytics(period);
+  Future<AnalyticsEntity> getAnalytics(String turfId, TimePeriod period) {
+    return remoteDataSource.getAnalytics(turfId, period);
   }
 }

@@ -2,27 +2,70 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Users collection
+    // Helper: read the caller's user doc to check role / turfId.
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    function callerTurfId() {
+      return userDoc().turfId;
+    }
+    function isAdminAt(tid) {
+      return userDoc().role == 'ADMIN' && userDoc().turfId == tid;
+    }
+
+    // Users collection — each user reads/writes their own doc.
     match /users/{userId} {
       allow read: if request.auth != null;
       allow write: if request.auth.uid == userId;
     }
 
-    // Bookings collection
-    match /bookings/{bookingId} {
+    // Turfs — anyone signed in can list/read (customers need to pick).
+    // Writes restricted: only the assigned admin can update their own turf.
+    match /turfs/{turfId} {
       allow read: if request.auth != null;
-      allow create: if request.auth != null;
-      allow update, delete: if request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.data.adminPhone == request.auth.token.phone_number;
+      allow update: if request.auth != null && isAdminAt(turfId);
+      allow delete: if false;
+
+      // Per-turf settings (slot_config).
+      match /settings/{document=**} {
+        allow read: if request.auth != null
+          && callerTurfId() == turfId;
+        allow write: if request.auth != null && isAdminAt(turfId);
+      }
     }
 
-    // Settings collection (slot config, etc.)
-    match /settings/{document=**} {
+    // Bookings — scoped by turfId. Caller's user.turfId must match.
+    match /bookings/{bookingId} {
+      allow read: if request.auth != null
+        && resource.data.turfId == callerTurfId();
+      allow create: if request.auth != null
+        && request.resource.data.turfId == callerTurfId();
+      allow update, delete: if request.auth != null
+        && resource.data.turfId == callerTurfId();
+    }
+
+    // Regular bookings — admin-only writes within own turf.
+    match /regular_bookings/{regularId} {
+      allow read: if request.auth != null
+        && resource.data.turfId == callerTurfId();
+      allow create: if request.auth != null
+        && request.resource.data.turfId == callerTurfId()
+        && isAdminAt(callerTurfId());
+      allow update, delete: if request.auth != null
+        && resource.data.turfId == callerTurfId()
+        && isAdminAt(callerTurfId());
+    }
+
+    // Leaderboard collection (cached rankings) — kept open for now.
+    match /leaderboard/{document=**} {
       allow read: if request.auth != null;
       allow write: if request.auth != null;
     }
 
-    // Leaderboard collection (cached rankings)
-    match /leaderboard/{document=**} {
+    // Legacy global settings (kept readable but slot_config now per-turf).
+    match /settings/{document=**} {
       allow read: if request.auth != null;
       allow write: if request.auth != null;
     }

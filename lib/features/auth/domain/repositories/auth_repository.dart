@@ -18,5 +18,14 @@ abstract class AuthRepository {
     required String otp,
   });
 
+  Future<void> sendEmailLink({required String email});
+
+  Future<UserEntity> verifyEmailLink({
+    required String email,
+    required String emailLink,
+  });
+
+  bool isSignInWithEmailLink(String link);
+
   Future<void> signOut();
 }
