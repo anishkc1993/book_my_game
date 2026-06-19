@@ -29,6 +29,22 @@ import 'features/turf/data/datasources/turf_remote_datasource.dart';
 import 'features/turf/data/repositories/turf_repository_impl.dart';
 import 'features/turf/domain/repositories/turf_repository.dart';
 import 'features/turf/presentation/providers/turf_provider.dart';
+import 'features/academy/data/datasources/academy_remote_datasource.dart';
+import 'features/academy/data/repositories/academy_repository_impl.dart';
+import 'features/academy/domain/repositories/academy_repository.dart';
+import 'features/academy/presentation/providers/academy_provider.dart';
+import 'features/monthly_plans/data/datasources/monthly_plan_remote_datasource.dart';
+import 'features/monthly_plans/data/repositories/monthly_plan_repository_impl.dart';
+import 'features/monthly_plans/domain/repositories/monthly_plan_repository.dart';
+import 'features/monthly_plans/presentation/providers/monthly_plan_provider.dart';
+import 'features/tournaments/data/datasources/tournament_remote_datasource.dart';
+import 'features/tournaments/data/repositories/tournament_repository_impl.dart';
+import 'features/tournaments/domain/repositories/tournament_repository.dart';
+import 'features/tournaments/presentation/providers/tournament_provider.dart';
+import 'features/concessions/data/datasources/concession_remote_datasource.dart';
+import 'features/concessions/data/repositories/concession_repository_impl.dart';
+import 'features/concessions/domain/repositories/concession_repository.dart';
+import 'features/concessions/presentation/providers/concession_provider.dart';
 import 'router/app_router.dart';
 
 class InjectionContainer {
@@ -75,6 +91,26 @@ class InjectionContainer {
   late final TurfRepository _turfRepository;
   late final TurfProvider turfProvider;
 
+  // Academy
+  late final AcademyRemoteDataSource _academyRemoteDataSource;
+  late final AcademyRepository _academyRepository;
+  late final AcademyProvider academyProvider;
+
+  // Monthly plans
+  late final MonthlyPlanRemoteDataSource _monthlyPlanRemoteDataSource;
+  late final MonthlyPlanRepository _monthlyPlanRepository;
+  late final MonthlyPlanProvider monthlyPlanProvider;
+
+  // Tournaments
+  late final TournamentRemoteDataSource _tournamentRemoteDataSource;
+  late final TournamentRepository _tournamentRepository;
+  late final TournamentProvider tournamentProvider;
+
+  // Concessions
+  late final ConcessionRemoteDataSource _concessionRemoteDataSource;
+  late final ConcessionRepository _concessionRepository;
+  late final ConcessionProvider concessionProvider;
+
   Future<void> init() async {
     // External dependencies
     _firebaseAuth = firebase_auth.FirebaseAuth.instance;
@@ -108,6 +144,7 @@ class InjectionContainer {
       signOutUseCase: _signOutUseCase,
       sendEmailLinkUseCase: _sendEmailLinkUseCase,
       verifyEmailLinkUseCase: _verifyEmailLinkUseCase,
+      authRepository: _authRepository,
       prefs: _sharedPreferences,
     );
 
@@ -164,6 +201,37 @@ class InjectionContainer {
     _turfRepository = TurfRepositoryImpl(remoteDataSource: _turfRemoteDataSource);
     turfProvider = TurfProvider(repository: _turfRepository);
 
+    // Academy data sources / repository / provider
+    _academyRemoteDataSource =
+        AcademyRemoteDataSourceImpl(firestore: _firestore);
+    _academyRepository =
+        AcademyRepositoryImpl(remoteDataSource: _academyRemoteDataSource);
+    academyProvider = AcademyProvider(repository: _academyRepository);
+
+    // Monthly plans data sources / repository / provider
+    _monthlyPlanRemoteDataSource =
+        MonthlyPlanRemoteDataSourceImpl(firestore: _firestore);
+    _monthlyPlanRepository = MonthlyPlanRepositoryImpl(
+        remoteDataSource: _monthlyPlanRemoteDataSource);
+    monthlyPlanProvider =
+        MonthlyPlanProvider(repository: _monthlyPlanRepository);
+
+    // Tournaments data sources / repository / provider
+    _tournamentRemoteDataSource =
+        TournamentRemoteDataSourceImpl(firestore: _firestore);
+    _tournamentRepository = TournamentRepositoryImpl(
+        remoteDataSource: _tournamentRemoteDataSource);
+    tournamentProvider =
+        TournamentProvider(repository: _tournamentRepository);
+
+    // Concessions data sources / repository / provider
+    _concessionRemoteDataSource =
+        ConcessionRemoteDataSourceImpl(firestore: _firestore);
+    _concessionRepository = ConcessionRepositoryImpl(
+        remoteDataSource: _concessionRemoteDataSource);
+    concessionProvider =
+        ConcessionProvider(repository: _concessionRepository);
+
     // Keep turfId in sync with the authenticated user across all providers
     // that read per-turf data.
     void syncTurf() {
@@ -171,9 +239,39 @@ class InjectionContainer {
       bookingProvider.setTurfId(tid);
       leaderboardProvider.setTurfId(tid);
       analyticsProvider.setTurfId(tid);
+      monthlyPlanProvider.setTurfId(tid);
+      tournamentProvider.setTurfId(tid);
+      concessionProvider.setTurfId(tid);
     }
     syncTurf();
     authProvider.addListener(syncTurf);
+
+    // Whenever bookings mutate (create / mark paid / status change / sweep),
+    // invalidate analytics cache and force-refresh the leaderboard so the
+    // dashboard + leaderboard reflect the change without manual refresh.
+    bookingProvider.mutations.addListener(() {
+      analyticsProvider.clearCache();
+      analyticsProvider.fetchAnalytics(forceRefresh: true);
+      leaderboardProvider.fetchLeaderboard(forceRefresh: true);
+    });
+
+    // Monthly-plan payments also affect dashboard revenue — same pattern.
+    monthlyPlanProvider.mutations.addListener(() {
+      analyticsProvider.clearCache();
+      analyticsProvider.fetchAnalytics(forceRefresh: true);
+    });
+
+    // Tournament payments → dashboard revenue.
+    tournamentProvider.mutations.addListener(() {
+      analyticsProvider.clearCache();
+      analyticsProvider.fetchAnalytics(forceRefresh: true);
+    });
+
+    // Concession sales → separate concession card on analytics.
+    concessionProvider.mutations.addListener(() {
+      analyticsProvider.clearCache();
+      analyticsProvider.fetchAnalytics(forceRefresh: true);
+    });
 
     // Router
     appRouter = AppRouter(authProvider: authProvider);

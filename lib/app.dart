@@ -9,6 +9,10 @@ import 'features/auth/presentation/providers/auth_provider.dart';
 import 'features/booking/presentation/providers/booking_provider.dart';
 import 'features/leaderboard/presentation/providers/leaderboard_provider.dart';
 import 'features/turf/presentation/providers/turf_provider.dart';
+import 'features/academy/presentation/providers/academy_provider.dart';
+import 'features/monthly_plans/presentation/providers/monthly_plan_provider.dart';
+import 'features/tournaments/presentation/providers/tournament_provider.dart';
+import 'features/concessions/presentation/providers/concession_provider.dart';
 import 'injection_container.dart';
 
 class BookMyGameApp extends StatelessWidget {
@@ -35,6 +39,18 @@ class BookMyGameApp extends StatelessWidget {
         ),
         ChangeNotifierProvider<TurfProvider>.value(
           value: injector.turfProvider,
+        ),
+        ChangeNotifierProvider<AcademyProvider>.value(
+          value: injector.academyProvider,
+        ),
+        ChangeNotifierProvider<MonthlyPlanProvider>.value(
+          value: injector.monthlyPlanProvider,
+        ),
+        ChangeNotifierProvider<TournamentProvider>.value(
+          value: injector.tournamentProvider,
+        ),
+        ChangeNotifierProvider<ConcessionProvider>.value(
+          value: injector.concessionProvider,
         ),
       ],
       child: Consumer<ThemeProvider>(

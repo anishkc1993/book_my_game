@@ -18,6 +18,21 @@ abstract class AuthRepository {
     required String otp,
   });
 
+  /// Sign in an existing user with phone + password.
+  /// Throws [AuthException] with code `user-not-found` if no password
+  /// account exists yet (treat as signup).
+  Future<UserEntity> signInWithPhonePassword({
+    required String phoneNumber,
+    required String password,
+  });
+
+  /// Link an email/password credential to the currently-signed-in Firebase
+  /// user. Used right after OTP verification during signup.
+  Future<void> linkPasswordToCurrentUser({
+    required String phoneNumber,
+    required String password,
+  });
+
   Future<void> sendEmailLink({required String email});
 
   Future<UserEntity> verifyEmailLink({

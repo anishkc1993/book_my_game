@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../../../../core/constants/app_constants.dart';
 import '../../domain/entities/slot_entity.dart';
 
 class SlotModel extends SlotEntity {
@@ -26,10 +27,14 @@ class SlotModel extends SlotEntity {
     );
   }
 
-  /// Generate all slots for a date (6 AM to 8 PM = 14 slots)
+  /// Generate all slots for a date, driven by [AppConstants.slotStartHour]
+  /// and [AppConstants.slotEndHour] so this matches the slot management
+  /// page (currently 6 AM → 9 PM = 15 slots).
   static List<SlotModel> generateSlotsForDate(DateTime date) {
     final slots = <SlotModel>[];
-    for (int hour = 6; hour < 20; hour++) {
+    for (int hour = AppConstants.slotStartHour;
+        hour < AppConstants.slotEndHour;
+        hour++) {
       slots.add(SlotModel.forHour(date, hour));
     }
     return slots;

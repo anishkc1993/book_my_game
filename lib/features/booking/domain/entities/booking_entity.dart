@@ -37,6 +37,16 @@ class BookingEntity extends Equatable {
   final bool isRegular;
   // When isRegular is true, the source regular booking's id.
   final String? regularBookingId;
+  // Synthesized from a monthly subscription plan — not persisted.
+  final bool isMonthlyPlan;
+  // When isMonthlyPlan is true, the source plan's id.
+  final String? monthlyPlanId;
+  // Synthesized from a tournament booking — not persisted.
+  final bool isTournament;
+  // When isTournament is true, the source tournament's id.
+  final String? tournamentId;
+  // Tournament title (organizer-provided), used only for display.
+  final String? tournamentName;
   // Multi-tenant: which turf this booking belongs to.
   final String? turfId;
 
@@ -58,6 +68,11 @@ class BookingEntity extends Equatable {
     this.createdAt,
     this.isRegular = false,
     this.regularBookingId,
+    this.isMonthlyPlan = false,
+    this.monthlyPlanId,
+    this.isTournament = false,
+    this.tournamentId,
+    this.tournamentName,
     this.turfId,
   });
 
@@ -96,6 +111,11 @@ class BookingEntity extends Equatable {
         createdAt,
         isRegular,
         regularBookingId,
+        isMonthlyPlan,
+        monthlyPlanId,
+        isTournament,
+        tournamentId,
+        tournamentName,
         turfId,
       ];
 }

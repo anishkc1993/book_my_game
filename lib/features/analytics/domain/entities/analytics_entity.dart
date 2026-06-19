@@ -21,6 +21,11 @@ class AnalyticsEntity extends Equatable {
   final double paidRevenue;
   final double pendingRevenue;
   final double averageBookingValue;
+  /// Concession (cafe) revenue for the period — tracked separately so it
+  /// never inflates the booking revenue figure on the dashboard.
+  final double concessionRevenue;
+  /// Count of concession sales in the period.
+  final int concessionSalesCount;
 
   // Booking Metrics
   final int totalBookings;
@@ -52,6 +57,8 @@ class AnalyticsEntity extends Equatable {
     required this.paidRevenue,
     required this.pendingRevenue,
     required this.averageBookingValue,
+    this.concessionRevenue = 0,
+    this.concessionSalesCount = 0,
     required this.totalBookings,
     required this.confirmedBookings,
     required this.pendingBookings,
@@ -102,6 +109,8 @@ class AnalyticsEntity extends Equatable {
         paidRevenue,
         pendingRevenue,
         averageBookingValue,
+        concessionRevenue,
+        concessionSalesCount,
         totalBookings,
         confirmedBookings,
         pendingBookings,

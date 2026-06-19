@@ -56,7 +56,8 @@ class TimeSlotGrid extends StatelessWidget {
       itemCount: slots.length,
       itemBuilder: (context, index) {
         final slot = slots[index];
-        final price = slotConfig?.getPriceForHour(slot.startTime.hour);
+        final price = slotConfig?.getPriceForHour(slot.startTime.hour,
+            date: slot.startTime);
         return TimeSlotCard(
           slot: slot,
           isSelected: selectedSlot?.id == slot.id,
@@ -88,6 +89,7 @@ class TimeSlotCard extends StatelessWidget {
     final cs = theme.colorScheme;
 
     final isPast = slot.isUnavailable;
+    final isPlayed = slot.isPlayed;
     final isBooked = slot.isBooked || slot.isBlocked;
     final isAvailable = slot.isAvailable;
 
@@ -127,6 +129,18 @@ class TimeSlotCard extends StatelessWidget {
           color: AppColors.brandGreen,
         ),
       );
+    } else if (isPlayed) {
+      bgColor = const Color(0xFF2563EB).withValues(alpha: 0.06);
+      borderColor = const Color(0xFF2563EB).withValues(alpha: 0.25);
+      timeColor = cs.onSurface.withValues(alpha: 0.45);
+      labelColor = const Color(0xFF2563EB);
+      labelText = 'Played';
+      leftIndicator = const Icon(
+        Icons.check_circle_rounded,
+        size: 14,
+        color: Color(0xFF2563EB),
+      );
+      rightWidget = null;
     } else if (isPast) {
       bgColor = AppColors.brandGreen.withValues(alpha: 0.06);
       borderColor = AppColors.brandGreen.withValues(alpha: 0.15);

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../domain/entities/booking_entity.dart';
 import '../../domain/entities/regular_booking_entity.dart';
+import '../../domain/entities/reward_entity.dart';
 import '../../domain/entities/slot_config_entity.dart';
 import '../../domain/entities/slot_entity.dart';
 import '../../domain/repositories/booking_repository.dart';
@@ -72,6 +73,14 @@ class BookingProvider extends ChangeNotifier {
   String? _errorMessage;
   String? get errorMessage => _errorMessage;
 
+  /// Monotonic counter bumped after any *mutation* that changes booking
+  /// state (create / mark paid / status change / sweep). Other providers
+  /// (analytics, leaderboard) listen for this to invalidate their caches.
+  /// Listening to plain `notifyListeners()` is too noisy — that fires for
+  /// every loading state change too.
+  final ValueNotifier<int> mutations = ValueNotifier<int>(0);
+  void _bumpMutation() => mutations.value = mutations.value + 1;
+
   BookingEntity? _lastBooking;
   BookingEntity? get lastBooking => _lastBooking;
 
@@ -92,15 +101,23 @@ class BookingProvider extends ChangeNotifier {
     await fetchSlotsForSelectedDate();
   }
 
-  /// Fetch slots for the selected date
-  Future<void> fetchSlotsForSelectedDate() async {
+  /// Fetch slots for the selected date.
+  ///
+  /// [includePast] — admin override. When true, past hours on today are
+  /// returned as available instead of being marked unavailable, so admins
+  /// can backfill bookings for slots that have already started.
+  Future<void> fetchSlotsForSelectedDate({bool includePast = false}) async {
     if (!_hasTurf) return;
     _state = BookingState.loading;
     _errorMessage = null;
     notifyListeners();
 
     try {
-      _slots = (await _repository.getSlotsForDate(_turfId!, _selectedDate))
+      _slots = (await _repository.getSlotsForDate(
+        _turfId!,
+        _selectedDate,
+        includePast: includePast,
+      ))
           .cast<SlotEntity>();
       _state = BookingState.loaded;
     } catch (e) {
@@ -145,8 +162,10 @@ class BookingProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final basePrice =
-          _slotConfig?.getPriceForHour(_selectedSlot!.startTime.hour);
+      final basePrice = _slotConfig?.getPriceForHour(
+        _selectedSlot!.startTime.hour,
+        date: _selectedSlot!.startTime,
+      );
 
       final booking = BookingEntity(
         userId: userId,
@@ -167,6 +186,7 @@ class BookingProvider extends ChangeNotifier {
       _selectedSlot = null;
 
       notifyListeners();
+      _bumpMutation();
       return true;
     } catch (e) {
       _errorMessage = e.toString().replaceAll('Exception: ', '');
@@ -235,6 +255,7 @@ class BookingProvider extends ChangeNotifier {
       // Refresh views that may have been affected.
       await fetchTodayBookings();
       if (_dateBookings.isNotEmpty) await fetchBookingsForSelectedDate();
+      _bumpMutation();
     }
     return updated;
   }
@@ -276,6 +297,7 @@ class BookingProvider extends ChangeNotifier {
       await fetchTodayBookings();
 
       notifyListeners();
+      _bumpMutation();
       return true;
     } catch (e) {
       _errorMessage = e.toString().replaceAll('Exception: ', '');
@@ -312,6 +334,8 @@ class BookingProvider extends ChangeNotifier {
     try {
       await _repository.markBookingAsPaid(bookingId, amount);
       await fetchBookingsForSelectedDate();
+      await fetchTodayBookings();
+      _bumpMutation();
       return true;
     } catch (e) {
       _errorMessage = e.toString();
@@ -325,6 +349,8 @@ class BookingProvider extends ChangeNotifier {
     try {
       await _repository.updateBookingStatus(bookingId, status);
       await fetchBookingsForSelectedDate();
+      await fetchTodayBookings();
+      _bumpMutation();
       return true;
     } catch (e) {
       _errorMessage = e.toString();
@@ -402,6 +428,7 @@ class BookingProvider extends ChangeNotifier {
     required double morningPrice,
     required double dayPrice,
     required double eveningPrice,
+    required double weekendPrice,
     required String adminId,
   }) async {
     if (!_hasTurf || _slotConfig == null) return false;
@@ -415,6 +442,7 @@ class BookingProvider extends ChangeNotifier {
         morningPrice: morningPrice,
         dayPrice: dayPrice,
         eveningPrice: eveningPrice,
+        weekendPrice: weekendPrice,
         updatedBy: adminId,
       );
 
@@ -423,8 +451,10 @@ class BookingProvider extends ChangeNotifier {
         morningPrice: morningPrice,
         dayPrice: dayPrice,
         eveningPrice: eveningPrice,
+        weekendPrice: weekendPrice,
         updatedAt: DateTime.now(),
         updatedBy: adminId,
+        freeGameThreshold: _slotConfig!.freeGameThreshold,
       );
       _slotConfigState = SlotConfigState.loaded;
       notifyListeners();
@@ -437,7 +467,18 @@ class BookingProvider extends ChangeNotifier {
     }
   }
 
-  double? getPriceForHour(int hour) => _slotConfig?.getPriceForHour(hour);
+  double? getPriceForHour(int hour, {DateTime? date}) =>
+      _slotConfig?.getPriceForHour(hour, date: date);
+
+  /// Resolve the right price for a regular booking. If any of the selected
+  /// weekly days is Sat/Sun, the flat weekend rate applies.
+  double? getPriceForRegular(int hour, List<int> daysOfWeek) {
+    if (_slotConfig == null) return null;
+    if (daysOfWeek.any(SlotConfigEntity.isWeekendDay)) {
+      return _slotConfig!.weekendPrice;
+    }
+    return _slotConfig!.getPriceForHour(hour);
+  }
   SlotPeriod? getPeriodForHour(int hour) => _slotConfig?.getPeriodForHour(hour);
   bool isHourEnabled(int hour) => _slotConfig?.isHourEnabled(hour) ?? true;
   List<int> get allPossibleHours => SlotConfigEntity.allPossibleHours;
@@ -476,10 +517,23 @@ class BookingProvider extends ChangeNotifier {
     required DateTime startDate,
     String? notes,
     required String adminId,
+    /// When set (>0), use this price verbatim instead of deriving from
+    /// slot config. Lets admins negotiate custom rates with regulars.
+    double? basePriceOverride,
   }) async {
     if (!_hasTurf) return false;
     try {
-      final basePrice = _slotConfig?.getPriceForHour(startHour) ?? 0;
+      double basePrice;
+      if (basePriceOverride != null && basePriceOverride > 0) {
+        basePrice = basePriceOverride;
+      } else {
+        // If any of the selected days is Sat/Sun, charge the flat weekend rate.
+        final hasWeekend =
+            daysOfWeek.any(SlotConfigEntity.isWeekendDay);
+        basePrice = hasWeekend
+            ? (_slotConfig?.weekendPrice ?? 0)
+            : (_slotConfig?.getPriceForHour(startHour) ?? 0);
+      }
       final entity = RegularBookingEntity(
         customerName: customerName,
         userPhone: userPhone,
@@ -539,6 +593,176 @@ class BookingProvider extends ChangeNotifier {
       return true;
     } catch (e) {
       _regularsError = e.toString().replaceAll('Exception: ', '');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Edit an existing regular booking template. The caller supplies the
+  /// price on [updated] — admins can set custom rates from the edit sheet.
+  Future<bool> updateRegularBooking(RegularBookingEntity updated) async {
+    if (!_hasTurf || updated.id == null) return false;
+    try {
+      final scoped = updated.copyWith(turfId: _turfId);
+      final saved = await _repository.updateRegularBooking(scoped);
+      _regulars =
+          _regulars.map((r) => r.id == saved.id ? saved : r).toList();
+      await fetchBookingsForSelectedDate();
+      await fetchSlotsForSelectedDate();
+      await fetchTodayBookings();
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _regularsError = e.toString().replaceAll('Exception: ', '');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Materialize a regular's occurrence on [date] as a real, paid booking.
+  /// Use this when admin collects payment from a regular customer for a
+  /// specific session — the materialized booking flows into analytics,
+  /// leaderboard, and rewards just like a normal walk-in.
+  Future<bool> markRegularPaidForDate({
+    required RegularBookingEntity regular,
+    required DateTime date,
+    required double amount,
+    required String adminId,
+  }) async {
+    if (!_hasTurf) return false;
+    try {
+      final day = DateTime(date.year, date.month, date.day);
+      final start = DateTime(day.year, day.month, day.day, regular.startHour);
+      final end = start.add(const Duration(hours: 1));
+      final booking = BookingEntity(
+        userId: '',
+        userPhone: regular.userPhone,
+        customerName: regular.customerName,
+        date: day,
+        startTime: start,
+        endTime: end,
+        status: BookingStatus.completed,
+        isPaid: true,
+        basePrice: regular.basePrice,
+        amountPaid: amount,
+        paidAt: DateTime.now(),
+        createdByAdmin: adminId,
+        createdAt: DateTime.now(),
+        isRegular: true,
+        regularBookingId: regular.id,
+        turfId: _turfId,
+      );
+      await _repository.createAdminBooking(booking);
+      await fetchBookingsForSelectedDate();
+      await fetchSlotsForSelectedDate();
+      await fetchTodayBookings();
+      _bumpMutation();
+      return true;
+    } catch (e) {
+      _regularsError = e.toString().replaceAll('Exception: ', '');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  // ============ Loyalty Rewards ============
+
+  /// Current user's reward progress (refreshed via [fetchMyReward]).
+  RewardEntity? _myReward;
+  RewardEntity? get myReward => _myReward;
+
+  /// All rewards in the current turf (admin view).
+  Map<String, RewardEntity> _rewardsByPhone = {};
+  Map<String, RewardEntity> get rewardsByPhone => _rewardsByPhone;
+
+  /// Lookup a reward for a specific phone from the cached admin map.
+  RewardEntity? rewardFor(String phone) => _rewardsByPhone[phone];
+
+  int get freeGameThreshold => _slotConfig?.freeGameThreshold ?? 0;
+  bool get rewardsEnabled => freeGameThreshold > 0;
+
+  Future<void> fetchMyReward(String phone) async {
+    if (!_hasTurf) return;
+    try {
+      _myReward = await _repository.getReward(_turfId!, phone);
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error fetching reward: $e');
+    }
+  }
+
+  Future<void> fetchAllRewards() async {
+    if (!_hasTurf) return;
+    try {
+      final list = await _repository.listRewards(_turfId!);
+      _rewardsByPhone = {for (final r in list) r.userPhone: r};
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error listing rewards: $e');
+    }
+  }
+
+  Future<bool> claimFreeGame(String phone) async {
+    if (!_hasTurf) return false;
+    try {
+      await _repository.claimFreeGame(_turfId!, phone);
+      // Refresh local view.
+      _rewardsByPhone = {
+        ..._rewardsByPhone,
+        phone: RewardEntity(
+          userPhone: phone,
+          progressCount: 0,
+          totalClaimed: (_rewardsByPhone[phone]?.totalClaimed ?? 0) + 1,
+          lastClaimedAt: DateTime.now(),
+        ),
+      };
+      // If it was the current user, refresh personal copy too.
+      if (_myReward?.userPhone == phone) {
+        _myReward = _rewardsByPhone[phone];
+      }
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _errorMessage = e.toString().replaceAll('Exception: ', '');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Persist a new free-game threshold (admin-only).
+  Future<bool> updateRewardsThreshold({
+    required int threshold,
+    required String adminId,
+  }) async {
+    if (!_hasTurf || _slotConfig == null) return false;
+    _slotConfigState = SlotConfigState.saving;
+    notifyListeners();
+    try {
+      await _repository.updateSlotPricing(
+        turfId: _turfId!,
+        morningPrice: _slotConfig!.morningPrice,
+        dayPrice: _slotConfig!.dayPrice,
+        eveningPrice: _slotConfig!.eveningPrice,
+        weekendPrice: _slotConfig!.weekendPrice,
+        updatedBy: adminId,
+        freeGameThreshold: threshold,
+      );
+      _slotConfig = SlotConfigEntity(
+        enabledHours: _slotConfig!.enabledHours,
+        morningPrice: _slotConfig!.morningPrice,
+        dayPrice: _slotConfig!.dayPrice,
+        eveningPrice: _slotConfig!.eveningPrice,
+        weekendPrice: _slotConfig!.weekendPrice,
+        updatedAt: DateTime.now(),
+        updatedBy: adminId,
+        freeGameThreshold: threshold,
+      );
+      _slotConfigState = SlotConfigState.loaded;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _slotConfigError = e.toString().replaceAll('Exception: ', '');
+      _slotConfigState = SlotConfigState.error;
       notifyListeners();
       return false;
     }

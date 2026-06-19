@@ -19,6 +19,7 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
   final _morningCtrl = TextEditingController();
   final _dayCtrl = TextEditingController();
   final _eveningCtrl = TextEditingController();
+  final _weekendCtrl = TextEditingController();
   bool _pricingChanged = false;
 
   @override
@@ -37,6 +38,7 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
       _morningCtrl.text = config.morningPrice.toInt().toString();
       _dayCtrl.text = config.dayPrice.toInt().toString();
       _eveningCtrl.text = config.eveningPrice.toInt().toString();
+      _weekendCtrl.text = config.weekendPrice.toInt().toString();
     }
   }
 
@@ -45,6 +47,7 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
     _morningCtrl.dispose();
     _dayCtrl.dispose();
     _eveningCtrl.dispose();
+    _weekendCtrl.dispose();
     super.dispose();
   }
 
@@ -52,8 +55,9 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
     final morning = double.tryParse(_morningCtrl.text) ?? 0;
     final day = double.tryParse(_dayCtrl.text) ?? 0;
     final evening = double.tryParse(_eveningCtrl.text) ?? 0;
+    final weekend = double.tryParse(_weekendCtrl.text) ?? 0;
 
-    if (morning <= 0 || day <= 0 || evening <= 0) {
+    if (morning <= 0 || day <= 0 || evening <= 0 || weekend <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please enter valid prices')),
       );
@@ -65,6 +69,7 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
           morningPrice: morning,
           dayPrice: day,
           eveningPrice: evening,
+          weekendPrice: weekend,
           adminId: adminId,
         );
 
@@ -272,6 +277,17 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
                           onChanged: () =>
                               setState(() => _pricingChanged = true),
                         ),
+                        const SizedBox(height: 10),
+                        _PriceCard(
+                          icon: Icons.weekend_outlined,
+                          iconBg: const Color(0xFFE3F2E0),
+                          iconColor: const Color(0xFF3D6820),
+                          title: 'Weekend',
+                          timeRange: 'Sat & Sun · all day',
+                          controller: _weekendCtrl,
+                          onChanged: () =>
+                              setState(() => _pricingChanged = true),
+                        ),
                         const SizedBox(height: 14),
                         // Save / Pricing saved button
                         _SavePricingButton(
@@ -281,6 +297,26 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
                         ),
                       ],
                     ),
+                  ),
+                ),
+
+                // ── Divider ─────────────────────────────────────────────────
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 28, 20, 0),
+                    child: Divider(
+                      color: cs.outlineVariant.withValues(alpha: 0.7),
+                      height: 1,
+                      thickness: 1,
+                    ),
+                  ),
+                ),
+
+                // ── Loyalty rewards section ─────────────────────────────────
+                SliverToBoxAdapter(
+                  child: _RewardsSection(
+                    config: provider.slotConfig,
+                    saving: isSaving,
                   ),
                 ),
 
@@ -715,6 +751,222 @@ class _SlotToggleCard extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ── Loyalty rewards section ───────────────────────────────────────────────────
+
+class _RewardsSection extends StatefulWidget {
+  final SlotConfigEntity? config;
+  final bool saving;
+  const _RewardsSection({required this.config, required this.saving});
+
+  @override
+  State<_RewardsSection> createState() => _RewardsSectionState();
+}
+
+class _RewardsSectionState extends State<_RewardsSection> {
+  final _ctrl = TextEditingController();
+  bool _dirty = false;
+  int? _hydratedFor;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final t = widget.config?.freeGameThreshold ?? 0;
+    if (_hydratedFor != t) {
+      _ctrl.text = t.toString();
+      _hydratedFor = t;
+      _dirty = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final n = int.tryParse(_ctrl.text.trim()) ?? 0;
+    final adminId = context.read<AuthProvider>().user?.uid ?? '';
+    final ok = await context
+        .read<BookingProvider>()
+        .updateRewardsThreshold(threshold: n, adminId: adminId);
+    if (!mounted) return;
+    setState(() => _dirty = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ok
+          ? (n == 0
+              ? 'Loyalty rewards disabled'
+              : 'Free game every $n games')
+          : 'Failed to save'),
+      behavior: SnackBarBehavior.floating,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final threshold = widget.config?.freeGameThreshold ?? 0;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 24, 20, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: AppColors.brandGreen.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: AppColors.brandGreen.withValues(alpha: 0.25),
+                    width: 1.2,
+                  ),
+                ),
+                child: const Icon(Icons.card_giftcard_outlined,
+                    color: AppColors.brandGreen, size: 28),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Loyalty rewards',
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    Text(
+                      threshold > 0
+                          ? '1 free game every $threshold qualifying games'
+                          : 'Rewards are currently disabled',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: cs.onSurfaceVariant,
+                      ),
+                    ),
+                    if (threshold > 0) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        'Counts only weekday morning + day games',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: cs.onSurfaceVariant
+                              .withValues(alpha: 0.75),
+                          fontStyle: FontStyle.italic,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            decoration: BoxDecoration(
+              color: cs.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: cs.outlineVariant),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Free game after',
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '0 turns it off',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: cs.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.baseline,
+                    textBaseline: TextBaseline.alphabetic,
+                    children: [
+                      SizedBox(
+                        width: 44,
+                        child: TextField(
+                          controller: _ctrl,
+                          keyboardType: TextInputType.number,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.digitsOnly,
+                            LengthLimitingTextInputFormatter(3),
+                          ],
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
+                          decoration:
+                              const InputDecoration.collapsed(hintText: '0'),
+                          onChanged: (_) =>
+                              setState(() => _dirty = true),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'games',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              onPressed: (!_dirty || widget.saving) ? null : _save,
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.brandGreen,
+                disabledBackgroundColor: cs.surfaceContainerHigh,
+                foregroundColor: Colors.white,
+                disabledForegroundColor: cs.onSurfaceVariant,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
+              ),
+              child: Text(
+                _dirty ? 'Save threshold' : '✓ Rewards saved',
+                style: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 14,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

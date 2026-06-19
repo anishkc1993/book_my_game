@@ -21,6 +21,11 @@ class BookingModel extends BookingEntity {
     super.createdAt,
     super.isRegular,
     super.regularBookingId,
+    super.isMonthlyPlan,
+    super.monthlyPlanId,
+    super.isTournament,
+    super.tournamentId,
+    super.tournamentName,
     super.turfId,
   });
 
@@ -63,6 +68,13 @@ class BookingModel extends BookingEntity {
       paidAt: entity.paidAt,
       createdByAdmin: entity.createdByAdmin,
       createdAt: entity.createdAt,
+      isRegular: entity.isRegular,
+      regularBookingId: entity.regularBookingId,
+      isMonthlyPlan: entity.isMonthlyPlan,
+      monthlyPlanId: entity.monthlyPlanId,
+      isTournament: entity.isTournament,
+      tournamentId: entity.tournamentId,
+      tournamentName: entity.tournamentName,
       turfId: entity.turfId,
     );
   }
@@ -87,6 +99,10 @@ class BookingModel extends BookingEntity {
       'paidAt': paidAt != null ? Timestamp.fromDate(paidAt!) : null,
       'createdByAdmin': createdByAdmin,
       'turfId': turfId,
+      // Preserve regular-source markers when materializing a regular's
+      // session so the audit trail and dedup checks survive.
+      if (isRegular) 'isRegular': true,
+      if (regularBookingId != null) 'regularBookingId': regularBookingId,
       'createdAt': FieldValue.serverTimestamp(),
     };
   }

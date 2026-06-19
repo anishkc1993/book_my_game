@@ -24,8 +24,17 @@ class _TurfSelectionPageState extends State<TurfSelectionPage> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<TurfProvider>().loadActiveTurfs();
+      // Pre-select the user's current turf if any, so the existing choice
+      // is visible when switching.
+      final currentTurfId = context.read<AuthProvider>().user?.turfId;
+      if (currentTurfId != null && mounted) {
+        setState(() => _selectedTurfId = currentTurfId);
+      }
     });
   }
+
+  bool get _hasExistingTurf =>
+      context.read<AuthProvider>().user?.turfId != null;
 
   Future<void> _confirm(TurfEntity turf) async {
     final auth = context.read<AuthProvider>();
@@ -57,34 +66,49 @@ class _TurfSelectionPageState extends State<TurfSelectionPage> {
       body: SafeArea(
         child: Consumer<TurfProvider>(
           builder: (context, provider, _) {
+            final isSwitching = _hasExistingTurf;
             return Padding(
-              padding: const EdgeInsets.fromLTRB(22, 24, 22, 16),
+              padding: const EdgeInsets.fromLTRB(22, 12, 22, 16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Logo + title
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: AppColors.brandGreen,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Center(
-                      child: Text(
-                        'BMG.',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 0.3,
+                  // Top row: back button (only when switching) + logo
+                  Row(
+                    children: [
+                      if (isSwitching)
+                        IconButton(
+                          onPressed: () => context.go(RoutePaths.home),
+                          icon: Icon(Icons.arrow_back_rounded,
+                              size: 24, color: cs.onSurface),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 36, minHeight: 36),
+                        ),
+                      if (isSwitching) const SizedBox(width: 8),
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: AppColors.brandGreen,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Center(
+                          child: Text(
+                            'BMG.',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 0.3,
+                            ),
+                          ),
                         ),
                       ),
-                    ),
+                    ],
                   ),
                   const SizedBox(height: 22),
                   Text(
-                    'Pick your turf',
+                    isSwitching ? 'Switch turf' : 'Pick your turf',
                     style: theme.textTheme.headlineMedium?.copyWith(
                       fontWeight: FontWeight.w800,
                       height: 1.1,
@@ -92,7 +116,9 @@ class _TurfSelectionPageState extends State<TurfSelectionPage> {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    'Choose where you play. You can switch later from Profile.',
+                    isSwitching
+                        ? 'Your bookings will follow the turf you select.'
+                        : 'Choose where you play. You can switch later from Profile.',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: cs.onSurfaceVariant,
                     ),

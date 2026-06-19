@@ -4,8 +4,10 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../../core/constants/app_constants.dart';
+import '../../../../core/errors/exceptions.dart';
 import '../../../../core/usecases/usecase.dart';
 import '../../domain/entities/user_entity.dart';
+import '../../domain/repositories/auth_repository.dart';
 import '../../domain/usecases/get_current_user_usecase.dart';
 import '../../domain/usecases/send_email_link_usecase.dart';
 import '../../domain/usecases/send_otp_usecase.dart';
@@ -31,6 +33,8 @@ class AuthProvider extends ChangeNotifier {
   final SignOutUseCase signOutUseCase;
   final SendEmailLinkUseCase sendEmailLinkUseCase;
   final VerifyEmailLinkUseCase verifyEmailLinkUseCase;
+  // Used directly for phone+password operations (no per-op use case wrapper).
+  final AuthRepository authRepository;
   final SharedPreferences prefs;
 
   AuthProvider({
@@ -40,6 +44,7 @@ class AuthProvider extends ChangeNotifier {
     required this.signOutUseCase,
     required this.sendEmailLinkUseCase,
     required this.verifyEmailLinkUseCase,
+    required this.authRepository,
     required this.prefs,
   }) {
     _init();
@@ -54,6 +59,11 @@ class AuthProvider extends ChangeNotifier {
   String? _pendingEmailLink;
   StreamSubscription<UserEntity?>? _authSubscription;
   bool _initialCheckDone = false;
+
+  // Stored across the signup → OTP → verify cycle so we can link the
+  // email/password credential after OTP succeeds.
+  String? _pendingPhone;
+  String? _pendingPassword;
 
   AuthStatus get status => _status;
   UserEntity? get user => _user;
@@ -117,6 +127,47 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  /// Unified entry point: try to sign in with phone+password. If no account
+  /// exists yet, kick off the OTP signup flow (storing the password so it
+  /// can be linked once OTP verifies).
+  Future<void> signInOrSignUp({
+    required String phoneNumber,
+    required String password,
+  }) async {
+    _status = AuthStatus.loading;
+    _errorMessage = null;
+    notifyListeners();
+
+    try {
+      final user = await authRepository.signInWithPhonePassword(
+        phoneNumber: phoneNumber,
+        password: password,
+      );
+      _user = user;
+      _pendingPhone = null;
+      _pendingPassword = null;
+      _status = AuthStatus.authenticated;
+      notifyListeners();
+    } on AuthException catch (e) {
+      if (e.code == 'user-not-found' ||
+          e.code == 'invalid-credential' ||
+          e.code == 'invalid-login-credentials') {
+        // New user — kick off signup via OTP.
+        _pendingPhone = phoneNumber;
+        _pendingPassword = password;
+        await sendOtp(phoneNumber);
+      } else {
+        _errorMessage = e.message;
+        _status = AuthStatus.error;
+        notifyListeners();
+      }
+    } catch (e) {
+      _errorMessage = e.toString();
+      _status = AuthStatus.error;
+      notifyListeners();
+    }
+  }
+
   Future<void> sendOtp(String phoneNumber) async {
     _status = AuthStatus.loading;
     _errorMessage = null;
@@ -165,6 +216,23 @@ class AuthProvider extends ChangeNotifier {
       final user = await verifyOtpUseCase(
         VerifyOtpParams(verificationId: _verificationId!, otp: otp),
       );
+
+      // If this OTP was part of the new-password signup flow, link the
+      // email/password credential to the user so future logins skip OTP.
+      if (_pendingPhone != null && _pendingPassword != null) {
+        try {
+          await authRepository.linkPasswordToCurrentUser(
+            phoneNumber: _pendingPhone!,
+            password: _pendingPassword!,
+          );
+        } catch (_) {
+          // Non-fatal — user is still signed in. They'll be prompted again
+          // next time if linking didn't take.
+        }
+        _pendingPhone = null;
+        _pendingPassword = null;
+      }
+
       _user = user;
       _status = AuthStatus.authenticated;
       _verificationId = null;

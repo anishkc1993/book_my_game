@@ -8,7 +8,10 @@ class ServerException implements Exception {
 
 class AuthException implements Exception {
   final String message;
-  const AuthException([this.message = 'Authentication failed']);
+  /// Optional machine-readable code (e.g. Firebase Auth's `user-not-found`)
+  /// — lets callers branch on the failure reason without parsing messages.
+  final String? code;
+  const AuthException([this.message = 'Authentication failed', this.code]);
 
   @override
   String toString() => message;

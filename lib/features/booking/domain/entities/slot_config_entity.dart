@@ -36,16 +36,24 @@ class SlotConfigEntity extends Equatable {
   final double morningPrice;
   final double dayPrice;
   final double eveningPrice;
+  /// Flat price for any hour booked on Saturday or Sunday. Overrides the
+  /// time-of-day brackets above on weekend days.
+  final double weekendPrice;
   final DateTime? updatedAt;
   final String? updatedBy;
+  /// Number of completed bookings a customer must play before they earn one
+  /// free game. 0 = rewards disabled.
+  final int freeGameThreshold;
 
   const SlotConfigEntity({
     required this.enabledHours,
     this.morningPrice = 1000.0,
     this.dayPrice = 1000.0,
     this.eveningPrice = 1200.0,
+    this.weekendPrice = 1500.0,
     this.updatedAt,
     this.updatedBy,
+    this.freeGameThreshold = 0,
   });
 
   /// Default configuration with all hours enabled and default prices
@@ -58,6 +66,7 @@ class SlotConfigEntity extends Equatable {
       morningPrice: 1000.0,
       dayPrice: 1000.0,
       eveningPrice: 1200.0,
+      weekendPrice: 1500.0,
     );
   }
 
@@ -71,8 +80,16 @@ class SlotConfigEntity extends Equatable {
     return SlotPeriod.evening; // 17-20
   }
 
-  /// Get the price for a given hour based on time period
-  double getPriceForHour(int hour) {
+  /// Whether the given weekday (1=Mon ... 7=Sun) is a weekend day.
+  static bool isWeekendDay(int weekday) =>
+      weekday == DateTime.saturday || weekday == DateTime.sunday;
+
+  /// Get the price for a given hour based on time period.
+  /// If [date] falls on Sat/Sun, returns the flat weekend price instead.
+  double getPriceForHour(int hour, {DateTime? date}) {
+    if (date != null && isWeekendDay(date.weekday)) {
+      return weekendPrice;
+    }
     final period = getPeriodForHour(hour);
     switch (period) {
       case SlotPeriod.morning:
@@ -102,13 +119,17 @@ class SlotConfigEntity extends Equatable {
         (index) => AppConstants.slotStartHour + index,
       );
 
+  bool get rewardsEnabled => freeGameThreshold > 0;
+
   @override
   List<Object?> get props => [
         enabledHours,
         morningPrice,
         dayPrice,
         eveningPrice,
+        weekendPrice,
         updatedAt,
         updatedBy,
+        freeGameThreshold,
       ];
 }

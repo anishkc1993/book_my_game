@@ -90,6 +90,26 @@ class LeaderboardProvider extends ChangeNotifier {
     }
   }
 
+  /// Admin action: rewrite every booking/regular/plan from any of
+  /// `sourcePhones` to `targetPhone` so the leaderboard merges them
+  /// into a single customer. Force-refreshes the leaderboard on success.
+  /// Returns the count of documents updated.
+  Future<int> mergePhoneNumbers({
+    required List<String> sourcePhones,
+    required String targetPhone,
+  }) async {
+    if (!_hasTurf) return 0;
+    final count = await _repository.mergePhoneNumbers(
+      turfId: _turfId!,
+      sourcePhones: sourcePhones,
+      targetPhone: targetPhone,
+    );
+    if (count > 0) {
+      await fetchLeaderboard(forceRefresh: true);
+    }
+    return count;
+  }
+
   String get lastUpdateDisplay {
     if (_lastUpdate == null) return 'Never';
     final now = DateTime.now();

@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../../domain/entities/analytics_entity.dart';
+import '../../domain/entities/yearly_revenue_entity.dart';
 import '../../domain/repositories/analytics_repository.dart';
 
 enum AnalyticsState { initial, loading, loaded, error }
@@ -76,6 +77,42 @@ class AnalyticsProvider extends ChangeNotifier {
 
   void clearCache() {
     _analyticsCache.clear();
+    _yearlyCache.clear();
     notifyListeners();
+  }
+
+  // ── Yearly revenue ──────────────────────────────────────────────────────
+
+  final Map<int, YearlyRevenueEntity> _yearlyCache = {};
+  YearlyRevenueEntity? yearlyFor(int year) => _yearlyCache[year];
+
+  AnalyticsState _yearlyState = AnalyticsState.initial;
+  AnalyticsState get yearlyState => _yearlyState;
+
+  String? _yearlyError;
+  String? get yearlyError => _yearlyError;
+
+  /// Returns the cached entity for [year] if present, otherwise fetches.
+  Future<YearlyRevenueEntity?> fetchYearly(int year,
+      {bool forceRefresh = false}) async {
+    if (!_hasTurf) return null;
+    if (!forceRefresh && _yearlyCache.containsKey(year)) {
+      return _yearlyCache[year];
+    }
+    _yearlyState = AnalyticsState.loading;
+    _yearlyError = null;
+    notifyListeners();
+    try {
+      final result = await _repository.getYearlyRevenue(_turfId!, year);
+      _yearlyCache[year] = result;
+      _yearlyState = AnalyticsState.loaded;
+      notifyListeners();
+      return result;
+    } catch (e) {
+      _yearlyError = e.toString().replaceAll('Exception: ', '');
+      _yearlyState = AnalyticsState.error;
+      notifyListeners();
+      return null;
+    }
   }
 }

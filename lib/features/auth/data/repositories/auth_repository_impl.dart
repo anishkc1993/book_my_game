@@ -44,6 +44,28 @@ class AuthRepositoryImpl implements AuthRepository {
   }
 
   @override
+  Future<UserEntity> signInWithPhonePassword({
+    required String phoneNumber,
+    required String password,
+  }) {
+    return remoteDataSource.signInWithPhonePassword(
+      phoneNumber: phoneNumber,
+      password: password,
+    );
+  }
+
+  @override
+  Future<void> linkPasswordToCurrentUser({
+    required String phoneNumber,
+    required String password,
+  }) {
+    return remoteDataSource.linkPasswordToCurrentUser(
+      phoneNumber: phoneNumber,
+      password: password,
+    );
+  }
+
+  @override
   Future<void> sendEmailLink({required String email}) async {
     await remoteDataSource.sendEmailLink(email: email);
   }

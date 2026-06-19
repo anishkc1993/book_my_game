@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -36,7 +37,15 @@ class _HomePageState extends State<HomePage> {
         if (user.isAdmin) {
           final bp = context.read<BookingProvider>();
           // Sweep first so today's list reflects the auto-completion.
-          bp.sweepPastBookings().then((_) => bp.fetchTodayBookings());
+          bp.sweepPastBookings().then((_) {
+            bp.fetchTodayBookings();
+            bp.fetchAllRewards();
+            // Sweep may have flipped CONFIRMED → COMPLETED, which the
+            // leaderboard now counts — force a fresh calc.
+            context
+                .read<LeaderboardProvider>()
+                .fetchLeaderboard(forceRefresh: true);
+          });
           bp.fetchSlotConfig();
           context.read<LeaderboardProvider>().fetchLeaderboard();
         }
@@ -46,15 +55,46 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<AuthProvider>(
-      builder: (context, auth, _) {
-        final user = auth.user;
-        if (user?.isAdmin == true) {
-          return _AdminHome(onSignOut: () => _signOut(context));
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final shouldExit = await _confirmExit(context);
+        if (shouldExit) {
+          await SystemNavigator.pop();
         }
-        return _CustomerHome(onSignOut: () => _signOut(context));
       },
+      child: Consumer<AuthProvider>(
+        builder: (context, auth, _) {
+          final user = auth.user;
+          if (user?.isAdmin == true) {
+            return _AdminHome(onSignOut: () => _signOut(context));
+          }
+          return _CustomerHome(onSignOut: () => _signOut(context));
+        },
+      ),
     );
+  }
+
+  Future<bool> _confirmExit(BuildContext context) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Do you want to exit?'),
+        content: const Text('BMG will close.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Exit'),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
   }
 
   Future<void> _signOut(BuildContext context) async {
@@ -112,6 +152,25 @@ class _AdminHomeState extends State<_AdminHome> {
 
   VoidCallback get onSignOut => widget.onSignOut;
 
+  Future<void> _refresh() async {
+    final bp = context.read<BookingProvider>();
+    // Sweep first so any past confirmed bookings flip to COMPLETED before
+    // the dashboard reads them. Sweep also bumps the mutation counter,
+    // which auto-refreshes analytics + leaderboard via the wired listener.
+    await bp.sweepPastBookings();
+    await Future.wait([
+      bp.fetchTodayBookings(),
+      bp.fetchSlotConfig(),
+      bp.fetchAllRewards(),
+    ]);
+    if (!mounted) return;
+    // Belt-and-braces — force a leaderboard refresh in case sweep made
+    // zero changes (then mutation counter didn't bump).
+    await context
+        .read<LeaderboardProvider>()
+        .fetchLeaderboard(forceRefresh: true);
+  }
+
   String _dateLine(DateTime d, int firstHour, int lastHour) {
     const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -138,17 +197,19 @@ class _AdminHomeState extends State<_AdminHome> {
             final today = DateTime.now();
             final liveBookings = bp.todayBookings;
 
-            // Revenue split
+            // Revenue split — paid revenue is recognized only after the
+            // match has actually played (advance payments are deferred).
+            // Monthly-plan + tournament sessions are excluded; their
+            // revenue flows through their own lump-sum payment rows.
             final paidRevenue = liveBookings
-                .where((b) => b.isPaid)
+                .where((b) =>
+                    !b.isMonthlyPlan &&
+                    !b.isTournament &&
+                    b.isPaid &&
+                    (b.isCompleted || b.endTime.isBefore(today)))
                 .fold<double>(
                     0, (s, b) => s + (b.amountPaid ?? b.basePrice ?? 0));
 
-            final pendingRevenue = liveBookings
-                .where((b) => !b.isPaid && !b.isCancelled)
-                .fold<double>(0, (s, b) => s + (b.basePrice ?? 0));
-
-            final totalRevenue = paidRevenue + pendingRevenue;
 
             // Slot data
             final enabledHours = (bp.slotConfig?.enabledHours ??
@@ -160,22 +221,44 @@ class _AdminHomeState extends State<_AdminHome> {
             final lastHour =
                 enabledHours.isEmpty ? 19 : enabledHours.last;
 
-            final bookedHours = liveBookings
-                .where((b) => !b.isCancelled)
-                .map((b) => b.startTime.hour)
-                .toSet();
+            // Build the booked-hours set — tournaments span the full
+            // start..end window, not just a single hour, so expand them
+            // here. Everyone else counts as the single start hour.
+            final bookedHours = <int>{};
+            for (final b in liveBookings) {
+              if (b.isCancelled) continue;
+              if (b.isTournament) {
+                for (var h = b.startTime.hour; h < b.endTime.hour; h++) {
+                  bookedHours.add(h);
+                }
+              } else {
+                bookedHours.add(b.startTime.hour);
+              }
+            }
             final totalEnabled = enabledHours.length;
             final bookedCount = bookedHours.length;
             final fillPercent = totalEnabled > 0
                 ? (bookedCount * 100 / totalEnabled).round()
                 : 0;
 
-            // Walk-in count = admin-created bookings today
-            final walkInsCount =
-                liveBookings.where((b) => b.isAdminBooking).length;
+            // Bookings count = every real booking visible today, excluding
+            // plan / tournament synthetic entries (they're tracked
+            // separately) and cancellations. Includes admin walk-ins,
+            // customer self-bookings, and materialized regulars so the
+            // number matches the list the admin sees on this page.
+            final walkInsCount = liveBookings
+                .where((b) =>
+                    !b.isMonthlyPlan &&
+                    !b.isTournament &&
+                    !b.isCancelled)
+                .length;
 
-            return CustomScrollView(
-              physics: const BouncingScrollPhysics(),
+            return RefreshIndicator(
+              onRefresh: _refresh,
+              color: AppColors.brandGreen,
+              child: CustomScrollView(
+                physics: const AlwaysScrollableScrollPhysics(
+                    parent: BouncingScrollPhysics()),
               slivers: [
                 // ── Top bar: ADMIN · VENUE + theme + bell ─────────────────
                 SliverToBoxAdapter(
@@ -264,7 +347,7 @@ class _AdminHomeState extends State<_AdminHome> {
                           Expanded(
                             flex: 3,
                             child: _RevenueCard(
-                              amount: totalRevenue,
+                              amount: paidRevenue,
                               delta: null,
                               hidden: _revenueHidden,
                               onToggleVisibility: _toggleRevenue,
@@ -306,24 +389,11 @@ class _AdminHomeState extends State<_AdminHome> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: _StatPill(
-                            icon: Icons.hourglass_bottom_rounded,
-                            iconColor: const Color(0xFFE6A020),
-                            iconBg: const Color(0xFFE6A020)
-                                .withValues(alpha: 0.18),
-                            value: _revenueHidden
-                                ? 'Rs. ••••'
-                                : 'Rs. ${pendingRevenue.toInt()}',
-                            label: 'PENDING',
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: _StatPill(
                             icon: Icons.group_outlined,
                             iconColor: cs.onSurfaceVariant,
                             iconBg: cs.surfaceContainerHighest,
                             value: '$walkInsCount',
-                            label: 'WALK-INS',
+                            label: 'BOOKINGS',
                           ),
                         ),
                       ],
@@ -398,11 +468,37 @@ class _AdminHomeState extends State<_AdminHome> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          'Quick actions',
-                          style: theme.textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.w800,
-                          ),
+                        Row(
+                          children: [
+                            Text(
+                              'Quick actions',
+                              style: theme.textTheme.titleLarge?.copyWith(
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const Spacer(),
+                            GestureDetector(
+                              onTap: () =>
+                                  context.push(RoutePaths.moreActions),
+                              child: Row(
+                                children: [
+                                  Text(
+                                    'See more',
+                                    style: theme.textTheme.bodyMedium
+                                        ?.copyWith(
+                                      color: AppColors.brandGreen,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  const Icon(
+                                    Icons.chevron_right_rounded,
+                                    size: 20,
+                                    color: AppColors.brandGreen,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 14),
                         IntrinsicHeight(
@@ -410,18 +506,17 @@ class _AdminHomeState extends State<_AdminHome> {
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
                               _PitchActionTile(
-                                icon: Icons.calendar_month_outlined,
-                                label: 'New booking',
-                                active: true,
-                                onTap: () =>
-                                    context.push(RoutePaths.adminBooking),
-                              ),
-                              const SizedBox(width: 10),
-                              _PitchActionTile(
                                 icon: Icons.event_repeat_outlined,
                                 label: 'Regulars',
                                 onTap: () =>
                                     context.push(RoutePaths.regularBookings),
+                              ),
+                              const SizedBox(width: 10),
+                              _PitchActionTile(
+                                icon: Icons.calendar_month_outlined,
+                                label: 'Plans',
+                                onTap: () =>
+                                    context.push(RoutePaths.monthlyPlans),
                               ),
                               const SizedBox(width: 10),
                               _PitchActionTile(
@@ -439,6 +534,10 @@ class _AdminHomeState extends State<_AdminHome> {
                               ),
                             ],
                           ),
+                        ),
+                        const SizedBox(height: 10),
+                        _AcademyWideTile(
+                          onTap: () => context.push(RoutePaths.academy),
                         ),
                       ],
                     ),
@@ -532,6 +631,7 @@ class _AdminHomeState extends State<_AdminHome> {
 
                 const SliverToBoxAdapter(child: SizedBox(height: 100)),
               ],
+              ),
             );
           },
         ),
@@ -1100,6 +1200,79 @@ class _LegendDot extends StatelessWidget {
   }
 }
 
+class _AcademyWideTile extends StatelessWidget {
+  final VoidCallback onTap;
+  const _AcademyWideTile({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [cs.primary, cs.tertiary],
+          ),
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: [
+            BoxShadow(
+              color: cs.primary.withValues(alpha: 0.25),
+              blurRadius: 16,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: cs.onPrimary.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(Icons.school_rounded,
+                  color: cs.onPrimary, size: 22),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Academy',
+                    style: TextStyle(
+                      color: cs.onPrimary,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                      height: 1.2,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Squads, players & monthly fees',
+                    style: TextStyle(
+                      color: cs.onPrimary.withValues(alpha: 0.85),
+                      fontSize: 11,
+                      height: 1.2,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.arrow_forward_rounded, color: cs.onPrimary),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _PitchActionTile extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -1469,6 +1642,8 @@ class _LiveBookingCard extends StatelessWidget {
   final bool isPaid;
   final int startHour;
   final bool isRegular;
+  final bool isMonthlyPlan;
+  final bool isTournament;
 
   const _LiveBookingCard({
     required this.name,
@@ -1478,17 +1653,26 @@ class _LiveBookingCard extends StatelessWidget {
     required this.isPaid,
     required this.startHour,
     this.isRegular = false,
+    this.isMonthlyPlan = false,
+    this.isTournament = false,
   });
 
   factory _LiveBookingCard.fromBooking(BookingEntity b) {
     return _LiveBookingCard(
-      name: b.customerName ?? b.userPhone,
+      // Prefer tournament name in the headline if it's a tournament card.
+      name: b.isTournament
+          ? (b.tournamentName?.isNotEmpty == true
+              ? b.tournamentName!
+              : (b.customerName ?? b.userPhone))
+          : (b.customerName ?? b.userPhone),
       phoneOrSub: b.userPhone,
       amount: (b.amountPaid ?? b.basePrice ?? 0).toInt(),
       status: b.status,
       isPaid: b.isPaid,
       startHour: b.startTime.hour,
       isRegular: b.isRegular,
+      isMonthlyPlan: b.isMonthlyPlan,
+      isTournament: b.isTournament,
     );
   }
 
@@ -1571,7 +1755,7 @@ class _LiveBookingCard extends StatelessWidget {
                         ),
                       ),
                     ),
-                    if (amount > 0) ...[
+                    if (amount > 0 && !isMonthlyPlan && !isTournament) ...[
                       Text('  ·  ',
                           style: theme.textTheme.bodySmall
                               ?.copyWith(color: cs.onSurfaceVariant)),
@@ -1593,6 +1777,8 @@ class _LiveBookingCard extends StatelessWidget {
             status: status,
             isPaid: isPaid,
             isRegular: isRegular,
+            isMonthlyPlan: isMonthlyPlan,
+            isTournament: isTournament,
           ),
         ],
       ),
@@ -1604,10 +1790,14 @@ class _LiveStatusChip extends StatelessWidget {
   final BookingStatus status;
   final bool isPaid;
   final bool isRegular;
+  final bool isMonthlyPlan;
+  final bool isTournament;
   const _LiveStatusChip({
     required this.status,
     required this.isPaid,
     required this.isRegular,
+    this.isMonthlyPlan = false,
+    this.isTournament = false,
   });
 
   @override
@@ -1618,7 +1808,15 @@ class _LiveStatusChip extends StatelessWidget {
     late final Color fg;
     late final Color bg;
     late final String label;
-    if (isRegular) {
+    if (isTournament) {
+      label = 'TOURNAMENT';
+      fg = const Color(0xFFE07820);
+      bg = const Color(0xFFE07820).withValues(alpha: 0.18);
+    } else if (isMonthlyPlan) {
+      label = 'PLAN';
+      fg = const Color(0xFF5C5BD6);
+      bg = const Color(0xFF5C5BD6).withValues(alpha: 0.18);
+    } else if (isRegular) {
       label = 'REGULAR';
       fg = isDark ? AppColors.limeAccent : AppColors.brandGreen;
       bg = (isDark ? AppColors.limeAccent : AppColors.brandGreen)
@@ -1689,7 +1887,12 @@ class _CustomerHomeState extends State<_CustomerHome> {
   Future<void> _refresh() async {
     final user = context.read<AuthProvider>().user;
     if (user != null) {
-      await context.read<BookingProvider>().fetchUserBookings(user.uid);
+      final bp = context.read<BookingProvider>();
+      await Future.wait([
+        bp.fetchUserBookings(user.uid),
+        bp.fetchSlotConfig(),
+        if (user.phoneNumber != null) bp.fetchMyReward(user.phoneNumber!),
+      ]);
     }
   }
 
@@ -1752,13 +1955,39 @@ class _CustomerHomeState extends State<_CustomerHome> {
                     ),
                   ),
 
-                  // ── Membership chip ─────────────────────────────────────
+                  // ── Membership + Turf chips ─────────────────────────────
                   SliverToBoxAdapter(
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
-                      child: _MembershipChip(membership: user?.membership),
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          _MembershipChip(membership: user?.membership),
+                          _CurrentTurfChip(
+                            turfName: user?.turfName,
+                            onSwitch: () =>
+                                context.push(RoutePaths.selectTurf),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
+
+                  // ── Loyalty progress (only when admin has enabled it) ───
+                  if (bookingProvider.rewardsEnabled)
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                        child: _LoyaltyProgress(
+                          threshold: bookingProvider.freeGameThreshold,
+                          progress:
+                              bookingProvider.myReward?.progressCount ?? 0,
+                          totalClaimed:
+                              bookingProvider.myReward?.totalClaimed ?? 0,
+                        ),
+                      ),
+                    ),
 
                   // ── UP NEXT card OR empty state ─────────────────────────
                   SliverToBoxAdapter(
@@ -2042,6 +2271,168 @@ class _MembershipChip extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ─── Current turf chip (tap to switch) ──────────────────────────────────────
+
+class _CurrentTurfChip extends StatelessWidget {
+  final String? turfName;
+  final VoidCallback onSwitch;
+  const _CurrentTurfChip({required this.turfName, required this.onSwitch});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final label = (turfName != null && turfName!.isNotEmpty)
+        ? turfName!
+        : 'Pick a turf';
+    return GestureDetector(
+      onTap: onSwitch,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+          color: cs.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: cs.outlineVariant),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.place_outlined,
+                size: 14, color: AppColors.brandGreen),
+            const SizedBox(width: 6),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 160),
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Icon(Icons.swap_horiz_rounded,
+                size: 14, color: cs.onSurfaceVariant),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Loyalty progress card ───────────────────────────────────────────────────
+
+class _LoyaltyProgress extends StatelessWidget {
+  final int threshold;
+  final int progress;
+  final int totalClaimed;
+  const _LoyaltyProgress({
+    required this.threshold,
+    required this.progress,
+    required this.totalClaimed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
+    final isEligible = progress >= threshold;
+    final accent =
+        isDark ? AppColors.limeAccent : AppColors.brandGreen;
+    final clampedProgress =
+        threshold == 0 ? 0.0 : (progress / threshold).clamp(0.0, 1.0);
+    final remaining =
+        (threshold - progress) < 0 ? 0 : (threshold - progress);
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      decoration: BoxDecoration(
+        color: isEligible
+            ? accent.withValues(alpha: 0.14)
+            : cs.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isEligible ? accent : cs.outlineVariant,
+          width: isEligible ? 1.4 : 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                alignment: Alignment.center,
+                child: Icon(
+                  isEligible
+                      ? Icons.emoji_events_rounded
+                      : Icons.card_giftcard_outlined,
+                  color: accent,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isEligible
+                          ? 'Your next game is FREE 🎉'
+                          : '$remaining more game${remaining == 1 ? '' : 's'} to a free game',
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      isEligible
+                          ? 'Show this to the admin when you arrive.'
+                          : '$progress of $threshold games played'
+                              '${totalClaimed > 0 ? '  •  $totalClaimed claimed' : ''}',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: cs.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              value: clampedProgress.toDouble(),
+              minHeight: 8,
+              backgroundColor: cs.surfaceContainerHighest,
+              color: accent,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Counts weekday morning + day games only',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: cs.onSurfaceVariant.withValues(alpha: 0.7),
+              fontStyle: FontStyle.italic,
+              fontSize: 11,
+            ),
+          ),
+        ],
       ),
     );
   }

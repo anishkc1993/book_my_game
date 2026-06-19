@@ -34,6 +34,73 @@ service cloud.firestore {
           && callerTurfId() == turfId;
         allow write: if request.auth != null && isAdminAt(turfId);
       }
+
+      // Loyalty rewards per customer (doc id = digits of phone).
+      // Writes (claim, increment) are server/admin-driven via sweeps.
+      match /rewards/{phone} {
+        allow read: if request.auth != null
+          && callerTurfId() == turfId;
+        allow write: if request.auth != null
+          && callerTurfId() == turfId;
+      }
+
+      // Academy — squads, players, fee payments. Admin-only writes within
+      // the same turf; nested under a static `data` doc so the rule path
+      // stays explicit. Reads are allowed for any signed-in member of the
+      // turf so coaches/staff can view.
+      match /academy/{academyId}/{collection}/{docId} {
+        allow read: if request.auth != null
+          && callerTurfId() == turfId;
+        allow write: if request.auth != null && isAdminAt(turfId);
+      }
+
+      // Monthly subscription plans + their payment audit log.
+      // Admin-only writes. Reads gated on caller belonging to the turf.
+      match /monthly_plans/{planId} {
+        allow read: if request.auth != null
+          && callerTurfId() == turfId;
+        allow write: if request.auth != null && isAdminAt(turfId);
+      }
+      match /monthly_plan_payments/{paymentId} {
+        allow read: if request.auth != null
+          && callerTurfId() == turfId;
+        allow write: if request.auth != null && isAdminAt(turfId);
+      }
+
+      // Tournaments + their payment audit log. Tournament docs are also
+      // read by anyone fetching that day's bookings (synthesizer), so the
+      // read rule mirrors the per-turf scope used by bookings.
+      match /tournaments/{tournamentId} {
+        allow read: if request.auth != null
+          && callerTurfId() == turfId;
+        allow write: if request.auth != null && isAdminAt(turfId);
+      }
+      match /tournament_payments/{paymentId} {
+        allow read: if request.auth != null
+          && callerTurfId() == turfId;
+        allow write: if request.auth != null && isAdminAt(turfId);
+      }
+
+      // Concession catalog + sales log. Admin-only writes; reads gated
+      // on caller belonging to the turf.
+      match /concession_items/{itemId} {
+        allow read: if request.auth != null
+          && callerTurfId() == turfId;
+        allow write: if request.auth != null && isAdminAt(turfId);
+      }
+      match /concession_sales/{saleId} {
+        allow read: if request.auth != null
+          && callerTurfId() == turfId;
+        allow write: if request.auth != null && isAdminAt(turfId);
+      }
+
+      // Cached weekly AI insights — one doc per Sunday-anchored week.
+      // Admin-only writes; reads gated on turf membership.
+      match /insights/{weekKey} {
+        allow read: if request.auth != null
+          && callerTurfId() == turfId;
+        allow write: if request.auth != null && isAdminAt(turfId);
+      }
     }
 
     // Bookings — scoped by turfId. Caller's user.turfId must match.

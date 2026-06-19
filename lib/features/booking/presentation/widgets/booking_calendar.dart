@@ -21,10 +21,6 @@ class _BookingCalendarState extends State<BookingCalendar> {
   static const int _daysToShow = 30;
 
   static const _dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  static const _monthNames = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
 
   late final DateTime _todayNorm;
   late final List<DateTime> _dates;
@@ -66,95 +62,88 @@ class _BookingCalendarState extends State<BookingCalendar> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
+    final selectedBg =
+        isDark ? AppColors.limeAccent : AppColors.brandGreen;
+    final selectedFg =
+        isDark ? const Color(0xFF0F2B06) : Colors.white;
 
-    final selMonth = _monthNames[widget.selectedDate.month - 1];
-    final selYear = widget.selectedDate.year;
+    return SizedBox(
+      height: 72,
+      child: ListView.separated(
+        controller: _scrollController,
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        itemCount: _dates.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final date = _dates[i];
+          final isSelected = date.year == widget.selectedDate.year &&
+              date.month == widget.selectedDate.month &&
+              date.day == widget.selectedDate.day;
+          final isToday = date == _todayNorm;
+          final dayName = _dayNames[date.weekday - 1].toUpperCase();
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(left: 2, bottom: 10),
-          child: Text(
-            '$selMonth $selYear',
-            style: theme.textTheme.titleSmall?.copyWith(
-              fontWeight: FontWeight.w700,
-              color: cs.onSurface,
-            ),
-          ),
-        ),
-        SizedBox(
-          height: 72,
-          child: ListView.separated(
-            controller: _scrollController,
-            scrollDirection: Axis.horizontal,
-            padding: EdgeInsets.zero,
-            itemCount: _dates.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 8),
-            itemBuilder: (context, i) {
-              final date = _dates[i];
-              final isSelected = date.year == widget.selectedDate.year &&
-                  date.month == widget.selectedDate.month &&
-                  date.day == widget.selectedDate.day;
-              final isToday = date == _todayNorm;
-              final dayName = _dayNames[date.weekday - 1];
-
-              return GestureDetector(
-                onTap: () => widget.onDateSelected(date),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 150),
-                  width: 52,
-                  decoration: BoxDecoration(
-                    color: isSelected
-                        ? AppColors.brandGreen
-                        : cs.surfaceContainerLow,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
+          return GestureDetector(
+            onTap: () => widget.onDateSelected(date),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
+              width: 56,
+              decoration: BoxDecoration(
+                color: isSelected ? selectedBg : cs.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: isSelected
+                      ? selectedBg
+                      : isToday
+                          ? AppColors.brandGreen.withValues(alpha: 0.4)
+                          : cs.outlineVariant,
+                  width: 1,
+                ),
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    dayName,
+                    style: theme.textTheme.labelSmall?.copyWith(
                       color: isSelected
-                          ? AppColors.brandGreen
-                          : isToday
-                              ? AppColors.brandGreen.withValues(alpha: 0.5)
-                              : cs.outlineVariant,
-                      width: 1,
+                          ? selectedFg.withValues(alpha: 0.85)
+                          : cs.onSurfaceVariant,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 10.5,
+                      letterSpacing: 0.6,
                     ),
                   ),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(
-                        dayName,
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: isSelected ? Colors.white70 : cs.onSurfaceVariant,
-                          fontWeight: FontWeight.w500,
-                          fontSize: 10,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '${date.day}',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          color: isSelected ? Colors.white : cs.onSurface,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      if (isToday)
-                        Container(
-                          margin: const EdgeInsets.only(top: 3),
-                          width: 4,
-                          height: 4,
-                          decoration: BoxDecoration(
-                            color: isSelected ? Colors.white60 : AppColors.brandGreen,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                    ],
+                  const SizedBox(height: 4),
+                  Text(
+                    '${date.day}',
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      color: isSelected ? selectedFg : cs.onSurface,
+                      fontWeight: FontWeight.w800,
+                      height: 1.0,
+                    ),
                   ),
-                ),
-              );
-            },
-          ),
-        ),
-      ],
+                  // Indicator dot below — only for selected (matches design)
+                  Container(
+                    margin: const EdgeInsets.only(top: 5),
+                    width: 4,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? selectedFg
+                          : isToday
+                              ? AppColors.brandGreen
+                              : Colors.transparent,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
     );
   }
 }

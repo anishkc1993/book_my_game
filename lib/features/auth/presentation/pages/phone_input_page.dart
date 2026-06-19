@@ -18,9 +18,14 @@ class PhoneInputPage extends StatefulWidget {
 
 class _PhoneInputPageState extends State<PhoneInputPage> {
   final _phoneController = TextEditingController();
-  final _focusNode = FocusNode();
+  final _passwordController = TextEditingController();
+  final _phoneFocus = FocusNode();
+  final _passwordFocus = FocusNode();
   String? _phoneError;
+  String? _passwordError;
   String? _pendingPhoneNumber;
+  bool _passwordObscured = true;
+  bool _submitted = false;
 
   @override
   void initState() {
@@ -37,7 +42,9 @@ class _PhoneInputPageState extends State<PhoneInputPage> {
       context.read<AuthProvider>().removeListener(_onAuthStatusChanged);
     } catch (_) {}
     _phoneController.dispose();
-    _focusNode.dispose();
+    _passwordController.dispose();
+    _phoneFocus.dispose();
+    _passwordFocus.dispose();
     super.dispose();
   }
 
@@ -48,30 +55,42 @@ class _PhoneInputPageState extends State<PhoneInputPage> {
     if (auth.status == AuthStatus.otpSent && _pendingPhoneNumber != null) {
       final phone = _pendingPhoneNumber!;
       _pendingPhoneNumber = null;
+      _submitted = false;
       context.push(RoutePaths.otpVerification, extra: phone);
     } else if (auth.status == AuthStatus.authenticated) {
       _pendingPhoneNumber = null;
+      _submitted = false;
       context.go(RoutePaths.home);
-    } else if (auth.status == AuthStatus.error && _pendingPhoneNumber != null) {
+    } else if (auth.status == AuthStatus.error && _submitted) {
       _pendingPhoneNumber = null;
-      _showError(auth.errorMessage ?? 'Failed to send OTP');
+      _submitted = false;
+      _showError(auth.errorMessage ?? 'Sign-in failed');
     }
   }
 
   void _validateAndSubmit() {
-    final error = Validators.validatePhoneNumber(_phoneController.text);
-    setState(() => _phoneError = error);
-    if (error == null) _sendOtp();
+    final phoneErr = Validators.validatePhoneNumber(_phoneController.text);
+    final pwd = _passwordController.text;
+    final pwdErr = pwd.length < 6 ? 'Password must be at least 6 characters' : null;
+    setState(() {
+      _phoneError = phoneErr;
+      _passwordError = pwdErr;
+    });
+    if (phoneErr == null && pwdErr == null) _doAuth();
   }
 
-  Future<void> _sendOtp() async {
+  Future<void> _doAuth() async {
     final auth = context.read<AuthProvider>();
     final phoneNumber = Validators.formatPhoneNumber(
       _phoneController.text,
       countryCode: AppConstants.defaultCountryCode,
     );
     _pendingPhoneNumber = phoneNumber;
-    await auth.sendOtp(phoneNumber);
+    _submitted = true;
+    await auth.signInOrSignUp(
+      phoneNumber: phoneNumber,
+      password: _passwordController.text,
+    );
   }
 
   void _showError(String message) {
@@ -252,9 +271,9 @@ class _PhoneInputPageState extends State<PhoneInputPage> {
                   Expanded(
                     child: TextFormField(
                       controller: _phoneController,
-                      focusNode: _focusNode,
+                      focusNode: _phoneFocus,
                       keyboardType: TextInputType.phone,
-                      textInputAction: TextInputAction.done,
+                      textInputAction: TextInputAction.next,
                       style: theme.textTheme.bodyLarge?.copyWith(
                         fontWeight: FontWeight.w500,
                         letterSpacing: 1.0,
@@ -270,10 +289,55 @@ class _PhoneInputPageState extends State<PhoneInputPage> {
                       onChanged: (_) {
                         if (_phoneError != null) setState(() => _phoneError = null);
                       },
-                      onFieldSubmitted: (_) => _validateAndSubmit(),
+                      onFieldSubmitted: (_) => _passwordFocus.requestFocus(),
                     ),
                   ),
                 ],
+              ),
+
+              const SizedBox(height: 16),
+
+              // Password label
+              Text(
+                'PASSWORD',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: cs.onSurfaceVariant,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.2,
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: _passwordController,
+                focusNode: _passwordFocus,
+                obscureText: _passwordObscured,
+                textInputAction: TextInputAction.done,
+                style: theme.textTheme.bodyLarge?.copyWith(
+                  fontWeight: FontWeight.w500,
+                ),
+                decoration: InputDecoration(
+                  hintText: 'At least 6 characters',
+                  errorText: _passwordError,
+                  prefixIcon: Icon(Icons.lock_outline_rounded,
+                      size: 20, color: cs.onSurfaceVariant),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _passwordObscured
+                          ? Icons.visibility_outlined
+                          : Icons.visibility_off_outlined,
+                      size: 20,
+                      color: cs.onSurfaceVariant,
+                    ),
+                    onPressed: () => setState(
+                        () => _passwordObscured = !_passwordObscured),
+                  ),
+                ),
+                onChanged: (_) {
+                  if (_passwordError != null) {
+                    setState(() => _passwordError = null);
+                  }
+                },
+                onFieldSubmitted: (_) => _validateAndSubmit(),
               ),
 
               const SizedBox(height: 10),
@@ -290,7 +354,7 @@ class _PhoneInputPageState extends State<PhoneInputPage> {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      "We'll send a 6-digit code. Standard SMS rates apply.",
+                      "New here? We'll send a 6-digit code to verify your phone, then you'll log in with password.",
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: cs.onSurfaceVariant.withValues(alpha: 0.5),
                       ),

@@ -7,6 +7,7 @@ import '../../../../core/constants/app_constants.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/utils/validators.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
+import '../../../tournaments/presentation/widgets/tournaments_tab.dart';
 import '../../domain/entities/regular_booking_entity.dart';
 import '../../domain/entities/slot_config_entity.dart';
 import '../providers/booking_provider.dart';
@@ -38,6 +39,18 @@ class _RegularBookingsPageState extends State<RegularBookingsPage> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (_) => const _AddRegularBookingSheet(),
+    );
+  }
+
+  Future<void> _openEditSheet(RegularBookingEntity reg) async {
+    await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) => _AddRegularBookingSheet(existing: reg),
     );
   }
 
@@ -83,111 +96,154 @@ class _RegularBookingsPageState extends State<RegularBookingsPage> {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
 
-    return Scaffold(
-      body: SafeArea(
-        child: Consumer<BookingProvider>(
-          builder: (context, provider, _) {
-            final regulars = provider.regulars;
-            return CustomScrollView(
-              slivers: [
-                // Header
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
-                    child: Row(
-                      children: [
-                        IconButton(
-                          onPressed: () => context.pop(),
-                          icon: Icon(Icons.arrow_back_rounded,
-                              size: 26, color: cs.onSurface),
-                        ),
-                        const SizedBox(width: 4),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Regular bookings',
-                                style: theme.textTheme.titleLarge?.copyWith(
-                                  fontWeight: FontWeight.w800,
-                                  height: 1.1,
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                'Weekly recurring slots',
-                                style: theme.textTheme.bodyMedium?.copyWith(
-                                  color: cs.onSurfaceVariant,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        GestureDetector(
-                          onTap: _openAddSheet,
-                          child: Container(
-                            margin: const EdgeInsets.symmetric(horizontal: 8),
-                            width: 42,
-                            height: 42,
-                            decoration: const BoxDecoration(
-                              color: AppColors.brandGreen,
-                              shape: BoxShape.circle,
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        body: SafeArea(
+          child: Column(
+            children: [
+              // ── Page header (shared across tabs) ─────────────────────────
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+                child: Row(
+                  children: [
+                    IconButton(
+                      onPressed: () => context.pop(),
+                      icon: Icon(Icons.arrow_back_rounded,
+                          size: 26, color: cs.onSurface),
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Recurring & events',
+                            style: theme.textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w800,
+                              height: 1.1,
                             ),
-                            child: const Icon(Icons.add_rounded,
-                                color: Colors.white, size: 24),
                           ),
-                        ),
-                      ],
+                          const SizedBox(height: 2),
+                          Text(
+                            'Weekly slots and one-off tournaments',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: cs.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-
-                if (provider.regularsLoading && regulars.isEmpty)
-                  const SliverFillRemaining(
-                    child: Center(child: CircularProgressIndicator()),
-                  )
-                else if (regulars.isEmpty)
-                  SliverFillRemaining(
-                    hasScrollBody: false,
-                    child: _EmptyState(onAdd: _openAddSheet),
-                  )
-                else ...[
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 24, 20, 8),
-                      child: Text(
-                        '${regulars.where((r) => r.isActive).length} active · '
-                        '${regulars.length} total',
-                        style: theme.textTheme.labelMedium?.copyWith(
-                          color: cs.onSurfaceVariant,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: 0.4,
-                        ),
-                      ),
-                    ),
-                  ),
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 32),
-                    sliver: SliverList.separated(
-                      itemBuilder: (_, i) => _RegularCard(
-                        regular: regulars[i],
-                        onToggle: (active) {
-                          final id = regulars[i].id;
-                          if (id == null) return;
-                          context
-                              .read<BookingProvider>()
-                              .setRegularBookingActive(id, active);
-                        },
-                        onDelete: () => _confirmDelete(regulars[i]),
-                      ),
-                      separatorBuilder: (_, __) => const SizedBox(height: 10),
-                      itemCount: regulars.length,
-                    ),
-                  ),
+              ),
+              const SizedBox(height: 8),
+              TabBar(
+                indicatorColor: AppColors.brandGreen,
+                indicatorWeight: 3,
+                labelColor: cs.onSurface,
+                unselectedLabelColor: cs.onSurfaceVariant,
+                labelStyle:
+                    const TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
+                tabs: const [
+                  Tab(text: 'Regulars'),
+                  Tab(text: 'Tournaments'),
                 ],
-              ],
-            );
-          },
+              ),
+              Expanded(
+                child: TabBarView(
+                  children: [
+                    // ── Regulars tab (original list) ────────────────────────
+                    Consumer<BookingProvider>(
+                      builder: (context, provider, _) {
+                        final regulars = provider.regulars;
+                        return CustomScrollView(
+                          slivers: [
+                            SliverToBoxAdapter(
+                              child: Padding(
+                                padding:
+                                    const EdgeInsets.fromLTRB(20, 16, 12, 4),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        regulars.isEmpty
+                                            ? '0 regulars'
+                                            : '${regulars.where((r) => r.isActive).length} active · '
+                                                '${regulars.length} total',
+                                        style: theme.textTheme.labelMedium
+                                            ?.copyWith(
+                                          color: cs.onSurfaceVariant,
+                                          fontWeight: FontWeight.w600,
+                                          letterSpacing: 0.4,
+                                        ),
+                                      ),
+                                    ),
+                                    GestureDetector(
+                                      onTap: _openAddSheet,
+                                      child: Container(
+                                        margin: const EdgeInsets.symmetric(
+                                            horizontal: 4),
+                                        width: 42,
+                                        height: 42,
+                                        decoration: const BoxDecoration(
+                                          color: AppColors.brandGreen,
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: const Icon(Icons.add_rounded,
+                                            color: Colors.white, size: 24),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            if (provider.regularsLoading && regulars.isEmpty)
+                              const SliverFillRemaining(
+                                child:
+                                    Center(child: CircularProgressIndicator()),
+                              )
+                            else if (regulars.isEmpty)
+                              SliverFillRemaining(
+                                hasScrollBody: false,
+                                child: _EmptyState(onAdd: _openAddSheet),
+                              )
+                            else
+                              SliverPadding(
+                                padding:
+                                    const EdgeInsets.fromLTRB(16, 8, 16, 32),
+                                sliver: SliverList.separated(
+                                  itemBuilder: (_, i) => _RegularCard(
+                                    regular: regulars[i],
+                                    onToggle: (active) {
+                                      final id = regulars[i].id;
+                                      if (id == null) return;
+                                      context
+                                          .read<BookingProvider>()
+                                          .setRegularBookingActive(
+                                              id, active);
+                                    },
+                                    onDelete: () =>
+                                        _confirmDelete(regulars[i]),
+                                    onEdit: () =>
+                                        _openEditSheet(regulars[i]),
+                                  ),
+                                  separatorBuilder: (_, __) =>
+                                      const SizedBox(height: 10),
+                                  itemCount: regulars.length,
+                                ),
+                              ),
+                          ],
+                        );
+                      },
+                    ),
+                    // ── Tournaments tab ─────────────────────────────────────
+                    const TournamentsTab(),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -265,11 +321,13 @@ class _RegularCard extends StatelessWidget {
   final RegularBookingEntity regular;
   final ValueChanged<bool> onToggle;
   final VoidCallback onDelete;
+  final VoidCallback onEdit;
 
   const _RegularCard({
     required this.regular,
     required this.onToggle,
     required this.onDelete,
+    required this.onEdit,
   });
 
   String _initials(String name) {
@@ -354,7 +412,7 @@ class _RegularCard extends StatelessWidget {
           const SizedBox(height: 12),
           Divider(color: cs.outlineVariant.withValues(alpha: 0.5), height: 1),
           const SizedBox(height: 12),
-          // Bottom: days + time + amount + delete
+          // Row: days + time + amount
           Row(
             children: [
               Icon(Icons.event_repeat_outlined,
@@ -389,14 +447,25 @@ class _RegularCard extends StatelessWidget {
                   fontWeight: FontWeight.w800,
                 ),
               ),
-              const SizedBox(width: 8),
-              GestureDetector(
+            ],
+          ),
+          const SizedBox(height: 8),
+          // Action row
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              _CardAction(
+                icon: Icons.edit_outlined,
+                label: 'Edit',
+                color: cs.onSurfaceVariant,
+                onTap: onEdit,
+              ),
+              const SizedBox(width: 6),
+              _CardAction(
+                icon: Icons.delete_outline_rounded,
+                label: 'Remove',
+                color: cs.error.withValues(alpha: 0.85),
                 onTap: onDelete,
-                child: Padding(
-                  padding: const EdgeInsets.all(4),
-                  child: Icon(Icons.delete_outline_rounded,
-                      size: 20, color: cs.error.withValues(alpha: 0.85)),
-                ),
               ),
             ],
           ),
@@ -406,10 +475,54 @@ class _RegularCard extends StatelessWidget {
   }
 }
 
+class _CardAction extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+  const _CardAction({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: color),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: cs.onSurface,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // ── Add sheet ────────────────────────────────────────────────────────────────
 
 class _AddRegularBookingSheet extends StatefulWidget {
-  const _AddRegularBookingSheet();
+  /// When non-null, the sheet opens in edit mode and updates the existing
+  /// regular booking instead of creating a new one.
+  final RegularBookingEntity? existing;
+
+  const _AddRegularBookingSheet({this.existing});
 
   @override
   State<_AddRegularBookingSheet> createState() =>
@@ -417,30 +530,81 @@ class _AddRegularBookingSheet extends StatefulWidget {
 }
 
 class _AddRegularBookingSheetState extends State<_AddRegularBookingSheet> {
-  final _nameCtrl = TextEditingController();
-  final _phoneCtrl = TextEditingController();
-  final _notesCtrl = TextEditingController();
-  final Set<int> _selectedDays = {};
+  late final TextEditingController _nameCtrl;
+  late final TextEditingController _phoneCtrl;
+  late final TextEditingController _notesCtrl;
+  late final TextEditingController _priceCtrl;
+  late final Set<int> _selectedDays;
   int? _selectedHour;
   DateTime _startDate = DateTime.now();
   String? _nameError;
   String? _phoneError;
   bool _submitting = false;
+  // Once admin types in the price, stop auto-updating it from day/hour
+  // changes — they've expressed an intentional override.
+  bool _priceTouched = false;
+
+  bool get _isEdit => widget.existing != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final e = widget.existing;
+    _nameCtrl = TextEditingController(text: e?.customerName ?? '');
+    // Strip the country code prefix for the input — saved with +977 when new.
+    final phoneStripped = e?.userPhone
+            .replaceFirst(RegExp(r'^\+?977'), '')
+            .replaceAll(RegExp(r'\D'), '') ??
+        '';
+    _phoneCtrl = TextEditingController(text: phoneStripped);
+    _notesCtrl = TextEditingController(text: e?.notes ?? '');
+    _selectedDays = {...?e?.daysOfWeek};
+    _selectedHour = e?.startHour;
+    _startDate = e?.startDate ?? DateTime.now();
+    _priceCtrl = TextEditingController(
+        text: e?.basePrice != null && e!.basePrice > 0
+            ? e.basePrice.toInt().toString()
+            : '');
+    // When editing, the stored price is the source of truth — treat it as
+    // already overridden so it doesn't get auto-rewritten on first build.
+    _priceTouched = _isEdit;
+  }
+
+  /// Auto-populate the price field from slot config when admin hasn't
+  /// manually edited it yet.
+  void _maybeAutoFillPrice(BookingProvider provider) {
+    if (_priceTouched) return;
+    if (_selectedHour == null || _selectedDays.isEmpty) return;
+    final derived =
+        provider.getPriceForRegular(_selectedHour!, _selectedDays.toList());
+    if (derived == null) return;
+    final newText = derived.toInt().toString();
+    if (_priceCtrl.text != newText) {
+      _priceCtrl.text = newText;
+      _priceCtrl.selection =
+          TextSelection.collapsed(offset: _priceCtrl.text.length);
+    }
+  }
 
   @override
   void dispose() {
     _nameCtrl.dispose();
     _phoneCtrl.dispose();
     _notesCtrl.dispose();
+    _priceCtrl.dispose();
     super.dispose();
   }
 
-  bool get _canSave =>
-      _nameCtrl.text.trim().isNotEmpty &&
-      _phoneCtrl.text.trim().length == 10 &&
-      _selectedDays.isNotEmpty &&
-      _selectedHour != null &&
-      !_submitting;
+  bool get _canSave {
+    final priceVal = double.tryParse(_priceCtrl.text.trim());
+    return _nameCtrl.text.trim().isNotEmpty &&
+        _phoneCtrl.text.trim().length == 10 &&
+        _selectedDays.isNotEmpty &&
+        _selectedHour != null &&
+        priceVal != null &&
+        priceVal > 0 &&
+        !_submitting;
+  }
 
   Future<void> _save() async {
     final nameErr = _nameCtrl.text.trim().isEmpty ? 'Name required' : null;
@@ -457,24 +621,45 @@ class _AddRegularBookingSheetState extends State<_AddRegularBookingSheet> {
     final adminId = auth.user?.uid ?? '';
 
     setState(() => _submitting = true);
-    final ok = await provider.createRegularBooking(
-      customerName: _nameCtrl.text.trim(),
-      userPhone: Validators.formatPhoneNumber(
-        _phoneCtrl.text,
-        countryCode: AppConstants.defaultCountryCode,
-      ),
-      daysOfWeek: _selectedDays.toList()..sort(),
-      startHour: _selectedHour!,
-      startDate: _startDate,
-      notes: _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
-      adminId: adminId,
+    final formattedPhone = Validators.formatPhoneNumber(
+      _phoneCtrl.text,
+      countryCode: AppConstants.defaultCountryCode,
     );
+    final daysSorted = _selectedDays.toList()..sort();
+    final notesText =
+        _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim();
+    final priceVal = double.tryParse(_priceCtrl.text.trim()) ?? 0;
+
+    final bool ok;
+    if (_isEdit) {
+      final updated = widget.existing!.copyWith(
+        customerName: _nameCtrl.text.trim(),
+        userPhone: formattedPhone,
+        daysOfWeek: daysSorted,
+        startHour: _selectedHour!,
+        startDate: _startDate,
+        notes: notesText,
+        basePrice: priceVal,
+      );
+      ok = await provider.updateRegularBooking(updated);
+    } else {
+      ok = await provider.createRegularBooking(
+        customerName: _nameCtrl.text.trim(),
+        userPhone: formattedPhone,
+        daysOfWeek: daysSorted,
+        startHour: _selectedHour!,
+        startDate: _startDate,
+        notes: notesText,
+        adminId: adminId,
+        basePriceOverride: priceVal,
+      );
+    }
     if (!mounted) return;
     setState(() => _submitting = false);
     if (ok) {
       Navigator.of(context).pop(true);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Regular booking added'),
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(_isEdit ? 'Regular updated' : 'Regular booking added'),
         behavior: SnackBarBehavior.floating,
       ));
     } else {
@@ -515,9 +700,15 @@ class _AddRegularBookingSheetState extends State<_AddRegularBookingSheet> {
         .toList()
       ..sort();
 
-    final selectedPrice = _selectedHour != null
-        ? provider.getPriceForHour(_selectedHour!)
+    final derivedPrice = _selectedHour != null
+        ? provider.getPriceForRegular(_selectedHour!, _selectedDays.toList())
         : null;
+    // Side-effect on build is fine here — _maybeAutoFillPrice no-ops once
+    // the user has touched the price field.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _maybeAutoFillPrice(provider);
+    });
 
     const dayLabels = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
     const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -660,21 +851,7 @@ class _AddRegularBookingSheetState extends State<_AddRegularBookingSheet> {
             const SizedBox(height: 22),
 
             // Time slot
-            Row(
-              children: [
-                const _FieldLabel(label: 'Time slot'),
-                if (selectedPrice != null) ...[
-                  const Spacer(),
-                  Text(
-                    'Rs. ${selectedPrice.toInt()} / hr',
-                    style: theme.textTheme.labelMedium?.copyWith(
-                      color: AppColors.brandGreen,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ],
-              ],
-            ),
+            const _FieldLabel(label: 'Time slot'),
             const SizedBox(height: 10),
             GridView.builder(
               shrinkWrap: true,
@@ -695,6 +872,54 @@ class _AddRegularBookingSheetState extends State<_AddRegularBookingSheet> {
                   onTap: () => setState(() => _selectedHour = h),
                 );
               },
+            ),
+            const SizedBox(height: 22),
+
+            // Price (editable override)
+            Row(
+              children: [
+                const _FieldLabel(label: 'Price per session'),
+                if (derivedPrice != null) ...[
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: () {
+                      setState(() {
+                        _priceTouched = false;
+                        _priceCtrl.text = derivedPrice.toInt().toString();
+                        _priceCtrl.selection = TextSelection.collapsed(
+                            offset: _priceCtrl.text.length);
+                      });
+                    },
+                    child: Text(
+                      'Auto: Rs. ${derivedPrice.toInt()}',
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: AppColors.brandGreen,
+                        fontWeight: FontWeight.w700,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _priceCtrl,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              onChanged: (_) {
+                _priceTouched = true;
+                setState(() {}); // refresh canSave
+              },
+              decoration: InputDecoration(
+                hintText: 'e.g. 1200',
+                prefixText: 'Rs. ',
+                prefixIcon: Icon(Icons.payments_outlined,
+                    size: 20, color: cs.onSurfaceVariant),
+                helperText: 'Applies to this regular only. '
+                    'Tap "Auto" to reset to the slot rate.',
+                helperMaxLines: 2,
+              ),
             ),
             const SizedBox(height: 22),
 
@@ -765,15 +990,21 @@ class _AddRegularBookingSheetState extends State<_AddRegularBookingSheet> {
                         child: CircularProgressIndicator(
                             strokeWidth: 2.5, color: Colors.white),
                       )
-                    : Text(
-                        selectedPrice != null && _selectedDays.isNotEmpty
-                            ? 'Save · Rs. ${selectedPrice.toInt()} × ${_selectedDays.length} day${_selectedDays.length == 1 ? '' : 's'}/wk'
-                            : 'Save regular',
-                        style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
+                    : Builder(builder: (_) {
+                        final p = double.tryParse(_priceCtrl.text.trim());
+                        final label = (p != null &&
+                                p > 0 &&
+                                _selectedDays.isNotEmpty)
+                            ? 'Save · Rs. ${p.toInt()} × ${_selectedDays.length} day${_selectedDays.length == 1 ? '' : 's'}/wk'
+                            : 'Save regular';
+                        return Text(
+                          label,
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        );
+                      }),
               ),
             ),
           ],
@@ -900,3 +1131,4 @@ class _HourChip extends StatelessWidget {
     );
   }
 }
+

@@ -11,7 +11,7 @@ class AppConstants {
 
   // Booking slot hours
   static const int slotStartHour = 6; // 6 AM
-  static const int slotEndHour = 21; // 9 PM
+  static const int slotEndHour = 22; // 10 PM (last bookable slot is 9-10 PM)
 
   // Firestore collections
   static const String settingsCollection = 'settings';
@@ -40,6 +40,14 @@ class RouteNames {
   static const String regularBookings = 'regular-bookings';
   static const String selectTurf = 'select-turf';
   static const String venueLocation = 'venue-location';
+  static const String academy = 'academy';
+  static const String monthlyPlans = 'monthly-plans';
+  static const String yearlyRevenue = 'yearly-revenue';
+  static const String concessions = 'concessions';
+  static const String moreActions = 'more-actions';
+  static const String hourlyBreakdown = 'hourly-breakdown';
+  static const String concessionCollections = 'concession-collections';
+  static const String concessionHistory = 'concession-history';
 }
 
 class RoutePaths {
@@ -56,4 +64,12 @@ class RoutePaths {
   static const String regularBookings = '/admin/regulars';
   static const String selectTurf = '/select-turf';
   static const String venueLocation = '/admin/venue';
+  static const String academy = '/admin/academy';
+  static const String monthlyPlans = '/admin/monthly-plans';
+  static const String yearlyRevenue = '/admin/analytics/yearly';
+  static const String concessions = '/admin/concessions';
+  static const String moreActions = '/admin/more';
+  static const String hourlyBreakdown = '/admin/analytics/hourly';
+  static const String concessionCollections = '/admin/concessions/collections';
+  static const String concessionHistory = '/admin/concessions/history';
 }

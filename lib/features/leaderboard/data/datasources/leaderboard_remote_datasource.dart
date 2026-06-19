@@ -11,6 +11,19 @@ abstract class LeaderboardRemoteDataSource {
     bool forceRefresh = false,
   });
   Future<DateTime> getLastUpdateTime();
+
+  /// Merge one or more `sourcePhones` into `targetPhone` across
+  /// `bookings`, `regular_bookings`, and the turf's `monthly_plans`
+  /// subcollection. Each source is matched against every stored
+  /// representation (`9812345678`, `9779812345678`, `+9779812345678`) and
+  /// rewritten to the canonical `+977<10>` form of `targetPhone`.
+  /// Returns total docs updated. The single-edit case is just a merge
+  /// with one source.
+  Future<int> mergePhoneNumbers({
+    required String turfId,
+    required List<String> sourcePhones,
+    required String targetPhone,
+  });
 }
 
 class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
@@ -44,6 +57,17 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
   String _getMonthKey(DateTime date) {
     final monthStr = date.month.toString().padLeft(2, '0');
     return '${date.year}-M$monthStr';
+  }
+
+  /// Strip the Nepal country code + any non-digits so leaderboard
+  /// aggregation treats "+9779812345678", "9779812345678", and
+  /// "9812345678" as the same customer.
+  String _normalizePhone(String raw) {
+    var digits = raw.replaceAll(RegExp(r'\D'), '');
+    if (digits.startsWith('977') && digits.length > 10) {
+      digits = digits.substring(3);
+    }
+    return digits;
   }
 
   @override
@@ -92,7 +116,7 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
           .doc(cacheKey)
           .collection('entries')
           .orderBy('rank')
-          .limit(20)
+          .limit(40)
           .get();
 
       return snapshot.docs
@@ -125,14 +149,32 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
     // Aggregate by phone number
     final Map<String, _BookingAggregation> aggregations = {};
 
+    final nowTs = DateTime.now();
     for (final doc in snapshot.docs) {
       final data = doc.data();
       final status = data['status'] as String?;
 
-      // Only count confirmed and completed bookings
-      if (status != 'CONFIRMED' && status != 'COMPLETED') continue;
+      // Skip cancelled outright.
+      if (status == 'CANCELLED') continue;
 
-      final phone = data['userPhone'] as String? ?? '';
+      // Only count games that have actually been played:
+      // - status == COMPLETED (sweep already moved it), OR
+      // - status == CONFIRMED but the end time is in the past (sweep
+      //   hasn't run yet for it, but the game time has clearly passed).
+      // Future confirmed bookings don't count yet.
+      final endTime = (data['endTime'] as Timestamp?)?.toDate();
+      final hasBeenPlayed = status == 'COMPLETED' ||
+          (status == 'CONFIRMED' &&
+              endTime != null &&
+              endTime.isBefore(nowTs));
+      if (!hasBeenPlayed) continue;
+
+      final rawPhone = data['userPhone'] as String? ?? '';
+      if (rawPhone.isEmpty) continue;
+      // Normalize so the same customer isn't double-counted across rows
+      // saved with vs without the +977 country code (e.g.,
+      // "+9779812345678" and "9812345678" must aggregate together).
+      final phone = _normalizePhone(rawPhone);
       if (phone.isEmpty) continue;
 
       final customerName = data['customerName'] as String?;
@@ -156,9 +198,9 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
     final sortedEntries = aggregations.values.toList()
       ..sort((a, b) => b.count.compareTo(a.count));
 
-    // Create ranked leaderboard entries (top 20)
+    // Create ranked leaderboard entries (top 40)
     final leaderboard = <LeaderboardEntryModel>[];
-    for (var i = 0; i < sortedEntries.length && i < 20; i++) {
+    for (var i = 0; i < sortedEntries.length && i < 40; i++) {
       final entry = sortedEntries[i];
       leaderboard.add(LeaderboardEntryModel(
         phoneNumber: entry.phoneNumber,
@@ -213,6 +255,80 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
       return DateTime.parse(lastUpdate);
     }
     return DateTime.now();
+  }
+
+  @override
+  Future<int> mergePhoneNumbers({
+    required String turfId,
+    required List<String> sourcePhones,
+    required String targetPhone,
+  }) async {
+    final targetDigits = _normalizePhone(targetPhone);
+    if (targetDigits.length != 10) {
+      throw const ServerException('Target must be a 10-digit phone');
+    }
+    final targetCanonical = '+977$targetDigits';
+
+    // Sources: drop duplicates and the target itself (no-op to merge into
+    // self). Keep only well-formed 10-digit entries.
+    final sources = <String>{};
+    for (final raw in sourcePhones) {
+      final d = _normalizePhone(raw);
+      if (d.length != 10) continue;
+      if (d == targetDigits) continue;
+      sources.add(d);
+    }
+    if (sources.isEmpty) {
+      return 0;
+    }
+
+    int updated = 0;
+    final batch = _firestore.batch();
+
+    Future<void> rewrite(
+      Query<Map<String, dynamic>> base,
+      String variant,
+    ) async {
+      final snap = await base.where('userPhone', isEqualTo: variant).get();
+      for (final d in snap.docs) {
+        batch.update(d.reference, {'userPhone': targetCanonical});
+        updated++;
+      }
+    }
+
+    final bookingsBase = _firestore
+        .collection('bookings')
+        .where('turfId', isEqualTo: turfId);
+    final regularsBase = _firestore
+        .collection('regular_bookings')
+        .where('turfId', isEqualTo: turfId);
+    final plansBase = _firestore
+        .collection('turfs')
+        .doc(turfId)
+        .collection('monthly_plans');
+
+    for (final source in sources) {
+      final variants = <String>{
+        source,
+        '977$source',
+        '+977$source',
+      };
+      for (final v in variants) {
+        await rewrite(bookingsBase, v);
+        await rewrite(regularsBase, v);
+        await rewrite(plansBase, v);
+      }
+    }
+
+    if (updated == 0) {
+      debugPrint('🔄 mergePhoneNumbers: no docs matched any source');
+      return 0;
+    }
+
+    await batch.commit();
+    debugPrint(
+        '🔄 mergePhoneNumbers: rewrote $updated docs → $targetCanonical (from ${sources.length} sources)');
+    return updated;
   }
 }
 

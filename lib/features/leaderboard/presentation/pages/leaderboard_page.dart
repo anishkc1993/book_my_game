@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../../../../core/theme/app_theme.dart';
+import '../../../auth/presentation/providers/auth_provider.dart';
+import '../../domain/entities/leaderboard_entry.dart';
 import '../providers/leaderboard_provider.dart';
 
 class LeaderboardPage extends StatefulWidget {
@@ -13,12 +16,64 @@ class LeaderboardPage extends StatefulWidget {
 }
 
 class _LeaderboardPageState extends State<LeaderboardPage> {
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _query = '';
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<LeaderboardProvider>().fetchLeaderboard();
     });
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  List<LeaderboardEntry> _filter(List<LeaderboardEntry> entries) {
+    if (_query.isEmpty) return entries;
+    final q = _query.toLowerCase();
+    return entries.where((e) {
+      final name = (e.customerName ?? '').toLowerCase();
+      return e.phoneNumber.contains(q) || name.contains(q);
+    }).toList();
+  }
+
+  Future<void> _mergePhones(LeaderboardEntry entry) async {
+    final result = await showDialog<_MergeResult>(
+      context: context,
+      builder: (ctx) => _MergePhoneDialog(entry: entry),
+    );
+    if (result == null || !mounted) return;
+    final provider = context.read<LeaderboardProvider>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final count = await provider.mergePhoneNumbers(
+        sourcePhones: result.sources,
+        targetPhone: result.target,
+      );
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(count == 0
+              ? 'No matching records found'
+              : 'Merged $count record${count == 1 ? '' : 's'} into +977${result.target}'),
+          backgroundColor:
+              count == 0 ? Colors.orange : AppColors.brandGreen,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Failed: $e'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    }
   }
 
   @override
@@ -158,6 +213,47 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                   ),
                 ),
 
+                // ── Search ──────────────────────────────────────────
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 18, 16, 0),
+                    child: TextField(
+                      controller: _searchCtrl,
+                      onChanged: (v) => setState(() => _query = v.trim()),
+                      keyboardType: TextInputType.text,
+                      decoration: InputDecoration(
+                        hintText: 'Search by number or name',
+                        prefixIcon:
+                            const Icon(Icons.search_rounded, size: 20),
+                        suffixIcon: _query.isEmpty
+                            ? null
+                            : IconButton(
+                                icon: const Icon(Icons.clear_rounded,
+                                    size: 18),
+                                onPressed: () {
+                                  _searchCtrl.clear();
+                                  setState(() => _query = '');
+                                },
+                              ),
+                        filled: true,
+                        fillColor: cs.surfaceContainerLow,
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 0),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide:
+                              BorderSide(color: cs.outlineVariant),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide:
+                              BorderSide(color: cs.outlineVariant),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+
                 // Content
                 if (provider.state == LeaderboardState.loading &&
                     provider.entries.isEmpty)
@@ -218,25 +314,47 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                     ),
                   )
                 else
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
-                    sliver: SliverList(
-                      delegate: SliverChildBuilderDelegate(
-                        (context, index) {
-                          final entry = provider.entries[index];
-                          return _LeaderboardTile(
-                            rank: entry.rank,
-                            displayName: entry.displayName,
-                            phoneNumber: entry.phoneNumber,
-                            bookingCount: entry.bookingCount,
-                            medalOrRank: provider.getMedalForRank(entry.rank),
-                            isTopThree: entry.rank <= 3,
-                          );
-                        },
-                        childCount: provider.entries.length,
+                  Builder(builder: (_) {
+                    final filtered = _filter(provider.entries);
+                    final isAdmin = context.watch<AuthProvider>().user?.isAdmin ?? false;
+                    if (filtered.isEmpty) {
+                      return SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 32, 16, 0),
+                          child: Center(
+                            child: Text(
+                              'No match for "$_query"',
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: cs.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    }
+                    return SliverPadding(
+                      padding: const EdgeInsets.fromLTRB(16, 18, 16, 0),
+                      sliver: SliverList(
+                        delegate: SliverChildBuilderDelegate(
+                          (context, index) {
+                            final entry = filtered[index];
+                            return _LeaderboardTile(
+                              rank: entry.rank,
+                              displayName: entry.displayName,
+                              phoneNumber: entry.phoneNumber,
+                              bookingCount: entry.bookingCount,
+                              medalOrRank:
+                                  provider.getMedalForRank(entry.rank),
+                              isTopThree: entry.rank <= 3,
+                              canEdit: isAdmin,
+                              onEdit: isAdmin ? () => _mergePhones(entry) : null,
+                            );
+                          },
+                          childCount: filtered.length,
+                        ),
                       ),
-                    ),
-                  ),
+                    );
+                  }),
 
                 const SliverToBoxAdapter(child: SizedBox(height: 32)),
               ],
@@ -255,6 +373,8 @@ class _LeaderboardTile extends StatelessWidget {
   final int bookingCount;
   final String medalOrRank;
   final bool isTopThree;
+  final bool canEdit;
+  final VoidCallback? onEdit;
 
   const _LeaderboardTile({
     required this.rank,
@@ -263,6 +383,8 @@ class _LeaderboardTile extends StatelessWidget {
     required this.bookingCount,
     required this.medalOrRank,
     required this.isTopThree,
+    this.canEdit = false,
+    this.onEdit,
   });
 
   @override
@@ -362,8 +484,240 @@ class _LeaderboardTile extends StatelessWidget {
               ],
             ),
           ),
+          if (canEdit) ...[
+            const SizedBox(width: 6),
+            IconButton(
+              onPressed: onEdit,
+              tooltip: 'Merge phones',
+              splashRadius: 20,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(
+                  minWidth: 32, minHeight: 32),
+              icon: Icon(Icons.merge_type_rounded,
+                  size: 20, color: cs.onSurfaceVariant),
+            ),
+          ],
         ],
       ),
+    );
+  }
+}
+
+/// Returned by [_MergePhoneDialog] on confirm. All values are 10-digit
+/// normalized phone strings (no `+977` prefix).
+class _MergeResult {
+  final String target;
+  final List<String> sources;
+  _MergeResult({required this.target, required this.sources});
+}
+
+/// Dialog: admin sets a target phone and adds one or more "other"
+/// numbers that should be rewritten to the target. Used to consolidate
+/// the same customer's bookings under a single phone so the leaderboard
+/// count merges correctly.
+class _MergePhoneDialog extends StatefulWidget {
+  final LeaderboardEntry entry;
+  const _MergePhoneDialog({required this.entry});
+
+  @override
+  State<_MergePhoneDialog> createState() => _MergePhoneDialogState();
+}
+
+class _MergePhoneDialogState extends State<_MergePhoneDialog> {
+  late final TextEditingController _targetCtrl;
+  final TextEditingController _sourceCtrl = TextEditingController();
+  final List<String> _sources = [];
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _targetCtrl =
+        TextEditingController(text: _to10Digits(widget.entry.phoneNumber));
+  }
+
+  @override
+  void dispose() {
+    _targetCtrl.dispose();
+    _sourceCtrl.dispose();
+    super.dispose();
+  }
+
+  /// Strip non-digits + leading 977 country code → 10-digit form.
+  static String _to10Digits(String raw) {
+    var d = raw.replaceAll(RegExp(r'\D'), '');
+    if (d.startsWith('977') && d.length > 10) d = d.substring(3);
+    return d;
+  }
+
+  void _addSource() {
+    final d = _to10Digits(_sourceCtrl.text);
+    if (d.length != 10) {
+      setState(() => _error = 'Enter a 10-digit number');
+      return;
+    }
+    final target = _to10Digits(_targetCtrl.text);
+    if (d == target) {
+      setState(() => _error = 'Already the target number');
+      return;
+    }
+    if (_sources.contains(d)) {
+      setState(() => _error = 'Already added');
+      return;
+    }
+    setState(() {
+      _sources.add(d);
+      _sourceCtrl.clear();
+      _error = null;
+    });
+  }
+
+  void _submit() {
+    final target = _to10Digits(_targetCtrl.text);
+    if (target.length != 10) {
+      setState(() => _error = 'Target must be 10 digits');
+      return;
+    }
+    if (_sources.isEmpty) {
+      setState(() => _error = 'Add at least one number to merge');
+      return;
+    }
+    Navigator.of(context).pop(
+      _MergeResult(target: target, sources: List.of(_sources)),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final entry = widget.entry;
+
+    return AlertDialog(
+      title: const Text('Merge phones'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 380),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (entry.customerName != null &&
+                  entry.customerName!.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    entry.customerName!,
+                    style: theme.textTheme.titleSmall
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ),
+              Text(
+                'Currently: ${entry.phoneNumber}',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: cs.onSurfaceVariant),
+              ),
+              const SizedBox(height: 14),
+              // ── Target ──────────────────────────────────────────
+              TextField(
+                controller: _targetCtrl,
+                keyboardType: TextInputType.phone,
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[\d+\s-]')),
+                  LengthLimitingTextInputFormatter(15),
+                ],
+                decoration: const InputDecoration(
+                  labelText: 'Keep this number',
+                  helperText: 'All others will be rewritten to this',
+                  prefixText: '+977 ',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 14),
+              // ── Sources to merge in ─────────────────────────────
+              Text(
+                'Merge these in (add one at a time):',
+                style: theme.textTheme.bodyMedium
+                    ?.copyWith(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _sourceCtrl,
+                      keyboardType: TextInputType.phone,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(
+                            RegExp(r'[\d+\s-]')),
+                        LengthLimitingTextInputFormatter(15),
+                      ],
+                      decoration: InputDecoration(
+                        labelText: 'Other number',
+                        hintText: '98XXXXXXXX',
+                        errorText: _error,
+                        prefixText: '+977 ',
+                        border: const OutlineInputBorder(),
+                      ),
+                      onSubmitted: (_) => _addSource(),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton.filled(
+                    onPressed: _addSource,
+                    style: IconButton.styleFrom(
+                      backgroundColor: AppColors.brandGreen,
+                      padding: const EdgeInsets.all(12),
+                    ),
+                    icon: const Icon(Icons.add_rounded,
+                        color: Colors.white),
+                  ),
+                ],
+              ),
+              if (_sources.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final s in _sources)
+                      Chip(
+                        label: Text('+977 $s'),
+                        onDeleted: () =>
+                            setState(() => _sources.remove(s)),
+                        backgroundColor:
+                            AppColors.brandGreen.withValues(alpha: 0.12),
+                        side: BorderSide(
+                            color: AppColors.brandGreen
+                                .withValues(alpha: 0.4)),
+                      ),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 10),
+              Text(
+                'Every booking, regular, and plan with any of these numbers will be rewritten to the target.',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: cs.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: AppColors.brandGreen),
+          onPressed: _submit,
+          child: Text(_sources.isEmpty
+              ? 'Merge'
+              : 'Merge ${_sources.length}'),
+        ),
+      ],
     );
   }
 }

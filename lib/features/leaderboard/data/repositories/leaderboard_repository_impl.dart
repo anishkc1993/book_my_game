@@ -21,4 +21,17 @@ class LeaderboardRepositoryImpl implements LeaderboardRepository {
 
   @override
   Future<DateTime> getLastUpdateTime() => _remoteDataSource.getLastUpdateTime();
+
+  @override
+  Future<int> mergePhoneNumbers({
+    required String turfId,
+    required List<String> sourcePhones,
+    required String targetPhone,
+  }) {
+    return _remoteDataSource.mergePhoneNumbers(
+      turfId: turfId,
+      sourcePhones: sourcePhones,
+      targetPhone: targetPhone,
+    );
+  }
 }

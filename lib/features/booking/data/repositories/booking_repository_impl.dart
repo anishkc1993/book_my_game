@@ -1,5 +1,6 @@
 import '../../domain/entities/booking_entity.dart';
 import '../../domain/entities/regular_booking_entity.dart';
+import '../../domain/entities/reward_entity.dart';
 import '../../domain/entities/slot_config_entity.dart';
 import '../../domain/entities/slot_entity.dart';
 import '../../domain/repositories/booking_repository.dart';
@@ -14,8 +15,13 @@ class BookingRepositoryImpl implements BookingRepository {
       : _remoteDataSource = remoteDataSource;
 
   @override
-  Future<List<SlotEntity>> getSlotsForDate(String turfId, DateTime date) {
-    return _remoteDataSource.getSlotsForDate(turfId, date);
+  Future<List<SlotEntity>> getSlotsForDate(
+    String turfId,
+    DateTime date, {
+    bool includePast = false,
+  }) {
+    return _remoteDataSource.getSlotsForDate(turfId, date,
+        includePast: includePast);
   }
 
   @override
@@ -78,14 +84,18 @@ class BookingRepositoryImpl implements BookingRepository {
     required double morningPrice,
     required double dayPrice,
     required double eveningPrice,
+    required double weekendPrice,
     required String updatedBy,
+    int? freeGameThreshold,
   }) {
     return _remoteDataSource.updateSlotPricing(
       turfId: turfId,
       morningPrice: morningPrice,
       dayPrice: dayPrice,
       eveningPrice: eveningPrice,
+      weekendPrice: weekendPrice,
       updatedBy: updatedBy,
+      freeGameThreshold: freeGameThreshold,
     );
   }
 
@@ -112,7 +122,29 @@ class BookingRepositoryImpl implements BookingRepository {
   }
 
   @override
+  Future<RegularBookingEntity> updateRegularBooking(
+      RegularBookingEntity booking) {
+    return _remoteDataSource
+        .updateRegularBooking(RegularBookingModel.fromEntity(booking));
+  }
+
+  @override
   Future<int> sweepPastBookings(String turfId) {
     return _remoteDataSource.sweepPastBookings(turfId);
+  }
+
+  @override
+  Future<RewardEntity> getReward(String turfId, String phone) {
+    return _remoteDataSource.getReward(turfId, phone);
+  }
+
+  @override
+  Future<List<RewardEntity>> listRewards(String turfId) {
+    return _remoteDataSource.listRewards(turfId);
+  }
+
+  @override
+  Future<void> claimFreeGame(String turfId, String phone) {
+    return _remoteDataSource.claimFreeGame(turfId, phone);
   }
 }

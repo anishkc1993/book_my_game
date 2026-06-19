@@ -25,6 +25,25 @@ abstract class AuthRemoteDataSource {
     required String otp,
   });
 
+  /// Sign in an existing user using their phone + password.
+  /// Internally we store the password against a synthetic email
+  /// (`<digits>@bmg.local`) since Firebase doesn't natively support
+  /// phone+password.
+  /// Throws [AuthException] with code `user-not-found` when the user
+  /// hasn't set up a password yet (i.e. this is a signup).
+  Future<UserModel> signInWithPhonePassword({
+    required String phoneNumber,
+    required String password,
+  });
+
+  /// Link an email/password credential to the currently-signed-in Firebase
+  /// user (used immediately after successful OTP verification to create the
+  /// account). The "email" is the synthetic `<digits>@bmg.local`.
+  Future<void> linkPasswordToCurrentUser({
+    required String phoneNumber,
+    required String password,
+  });
+
   Future<void> sendEmailLink({required String email});
 
   Future<UserModel> verifyEmailLink({
@@ -176,6 +195,73 @@ class AuthRemoteDataSourceImpl implements AuthRemoteDataSource {
     } catch (e) {
       debugPrint('❌ verifyOtp Error: $e');
       throw AuthException(e.toString());
+    }
+  }
+
+  /// Synthetic email format: just digits + "@bmg.local" so Firebase
+  /// email/password auth can be used without exposing a real email.
+  String _syntheticEmail(String phone) {
+    final digits = phone.replaceAll(RegExp(r'\D'), '');
+    return '$digits@bmg.local';
+  }
+
+  @override
+  Future<UserModel> signInWithPhonePassword({
+    required String phoneNumber,
+    required String password,
+  }) async {
+    try {
+      final email = _syntheticEmail(phoneNumber);
+      debugPrint('🔑 signInWithPhonePassword: $email');
+      final cred = await _firebaseAuth.signInWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
+      if (cred.user == null) {
+        throw const AuthException('Sign-in failed');
+      }
+      final base = UserModel.fromFirebaseUser(cred.user!);
+      // Read merged profile if it exists.
+      final firestoreUser = await getUserFromFirestore(cred.user!.uid);
+      return firestoreUser ?? base;
+    } on FirebaseAuthException catch (e) {
+      debugPrint('❌ signInWithPhonePassword: ${e.code} ${e.message}');
+      // Pass the Firebase code through verbatim so callers can branch on it.
+      throw AuthException(_mapAuthErrorToMessage(e), e.code);
+    } catch (e) {
+      debugPrint('❌ signInWithPhonePassword: $e');
+      throw AuthException(e.toString());
+    }
+  }
+
+  @override
+  Future<void> linkPasswordToCurrentUser({
+    required String phoneNumber,
+    required String password,
+  }) async {
+    final user = _firebaseAuth.currentUser;
+    if (user == null) {
+      throw const AuthException('No active session to link password to');
+    }
+    try {
+      final email = _syntheticEmail(phoneNumber);
+      debugPrint('🔗 linkPasswordToCurrentUser: $email -> ${user.uid}');
+      final credential =
+          EmailAuthProvider.credential(email: email, password: password);
+      await user.linkWithCredential(credential);
+    } on FirebaseAuthException catch (e) {
+      // If a password is already linked, update it instead.
+      if (e.code == 'provider-already-linked') {
+        try {
+          await user.updatePassword(password);
+        } catch (_) {
+          // Ignore — the password is already set; subsequent sign-in will work
+          // if the password matches what we already have.
+        }
+        return;
+      }
+      debugPrint('❌ linkPasswordToCurrentUser: ${e.code} ${e.message}');
+      throw AuthException(_mapAuthErrorToMessage(e), e.code);
     }
   }
 

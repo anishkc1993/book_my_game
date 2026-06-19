@@ -4,7 +4,8 @@ enum SlotStatus {
   available('AVAILABLE'),
   booked('BOOKED'),
   blocked('BLOCKED'),
-  unavailable('UNAVAILABLE'); // For past time slots
+  unavailable('UNAVAILABLE'), // For past time slots
+  played('PLAYED'); // Past + was booked — game is already done
 
   final String value;
   const SlotStatus(this.value);
@@ -39,6 +40,7 @@ class SlotEntity extends Equatable {
   bool get isBlocked => status == SlotStatus.blocked;
   bool get isUnavailable => status == SlotStatus.unavailable;
   bool get isPast => status == SlotStatus.unavailable; // Alias for clarity
+  bool get isPlayed => status == SlotStatus.played;
 
   String get timeRange {
     final startHour = startTime.hour;

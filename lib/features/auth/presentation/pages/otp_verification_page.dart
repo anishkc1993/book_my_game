@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../../../../core/constants/app_constants.dart';
@@ -130,7 +131,7 @@ class _OtpVerificationPageState extends State<OtpVerificationPage> {
                   IconButton(
                     onPressed: () {
                       context.read<AuthProvider>().resetToPhoneInput();
-                      Navigator.of(context).pop();
+                      context.go(RoutePaths.phoneInput);
                     },
                     icon: Container(
                       padding: const EdgeInsets.all(8),
@@ -195,7 +196,7 @@ class _OtpVerificationPageState extends State<OtpVerificationPage> {
                         GestureDetector(
                           onTap: () {
                             context.read<AuthProvider>().resetToPhoneInput();
-                            Navigator.of(context).pop();
+                            context.go(RoutePaths.phoneInput);
                           },
                           child: Text(
                             'Change',

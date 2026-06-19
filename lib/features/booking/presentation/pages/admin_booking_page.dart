@@ -7,6 +7,7 @@ import '../../../../core/theme/app_theme.dart';
 import '../../../../core/utils/validators.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../domain/entities/booking_entity.dart';
+import '../../domain/entities/regular_booking_entity.dart';
 import '../../domain/entities/slot_entity.dart';
 import '../providers/booking_provider.dart';
 import '../widgets/booking_calendar.dart';
@@ -27,6 +28,7 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
       provider.fetchSlotConfig();
       provider.selectDate(DateTime.now());
       provider.fetchBookingsForSelectedDate();
+      provider.fetchAllRewards();
     });
   }
 
@@ -222,12 +224,22 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
                   delegate: SliverChildBuilderDelegate(
                     (_, index) {
                       final booking = bookingProvider.dateBookings[index];
+                      final reward =
+                          bookingProvider.rewardFor(booking.userPhone);
+                      final eligible = bookingProvider.rewardsEnabled &&
+                          reward != null &&
+                          reward.isEligible(
+                              bookingProvider.freeGameThreshold);
                       return Padding(
                         padding: const EdgeInsets.only(bottom: 12),
                         child: _BookingCard(
                           booking: booking,
                           onMarkPaid: () => _markAsPaid(booking),
                           onCancel: () => _cancelBooking(booking),
+                          freeGameEligible: eligible,
+                          onClaimFreeGame: eligible
+                              ? () => _claimFreeGame(booking)
+                              : null,
                         ),
                       );
                     },
@@ -262,23 +274,100 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
       context: context,
       builder: (_) => _MarkAsPaidDialog(booking: booking),
     );
-    if (result != null && mounted) {
-      final success = await bookingProvider.markAsPaid(booking.id!, result);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(success
-                ? 'Marked as paid · Rs. ${result.toStringAsFixed(0)}'
-                : 'Failed to update'),
-            backgroundColor: success ? AppColors.brandGreen : Colors.red,
-            behavior: SnackBarBehavior.floating,
-            margin: const EdgeInsets.all(16),
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-        );
-      }
+    if (result == null || !mounted) return;
+
+    bool success;
+    if (booking.isRegular && booking.regularBookingId != null) {
+      // Synthetic regular entry — materialize this specific occurrence
+      // as a real paid booking. Build a stand-in regular from the
+      // synthetic booking's own fields so we don't depend on the regulars
+      // list being preloaded on this page.
+      final synth = RegularBookingEntity(
+        id: booking.regularBookingId,
+        customerName: booking.customerName ?? '',
+        userPhone: booking.userPhone,
+        daysOfWeek: const [],
+        startHour: booking.startTime.hour,
+        basePrice: booking.basePrice ?? result,
+        startDate: booking.date,
+        createdByAdmin: booking.createdByAdmin,
+      );
+      final adminId = context.read<AuthProvider>().user?.uid ?? '';
+      success = await bookingProvider.markRegularPaidForDate(
+        regular: synth,
+        date: booking.date,
+        amount: result,
+        adminId: adminId,
+      );
+    } else {
+      success = await bookingProvider.markAsPaid(booking.id!, result);
     }
+
+    if (mounted) {
+      final errMsg = bookingProvider.regularsError ??
+          bookingProvider.errorMessage ??
+          'unknown error';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success
+              ? 'Marked as paid · Rs. ${result.toStringAsFixed(0)}'
+              : 'Failed: $errMsg'),
+          backgroundColor: success ? AppColors.brandGreen : Colors.red,
+          behavior: SnackBarBehavior.floating,
+          duration:
+              Duration(seconds: success ? 3 : 8),
+          margin: const EdgeInsets.all(16),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+    }
+  }
+
+  Future<void> _claimFreeGame(BookingEntity booking) async {
+    final bookingProvider = context.read<BookingProvider>();
+    final cs = Theme.of(context).colorScheme;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Claim free game?'),
+        content: Text(
+          'Mark this booking as the free game for '
+          '${booking.customerName ?? booking.userPhone}.\n\n'
+          'Their reward counter will reset to 0.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.brandGreen,
+              foregroundColor: cs.surface,
+            ),
+            child: const Text('Claim'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    // Mark the booking paid with amount 0 (free) THEN reset the customer's
+    // reward counter. Two separate writes.
+    if (booking.id != null && !booking.id!.startsWith('regular_')) {
+      await bookingProvider.markAsPaid(booking.id!, 0);
+    }
+    final ok = await bookingProvider.claimFreeGame(booking.userPhone);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content:
+          Text(ok ? 'Free game claimed' : 'Failed to claim free game'),
+      backgroundColor: ok ? AppColors.brandGreen : cs.error,
+      behavior: SnackBarBehavior.floating,
+      margin: const EdgeInsets.all(16),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    ));
   }
 
   Future<void> _cancelBooking(BookingEntity booking) async {
@@ -327,7 +416,9 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
     final bookingProvider = context.read<BookingProvider>();
     final authProvider = context.read<AuthProvider>();
 
-    await bookingProvider.fetchSlotsForSelectedDate();
+    // Admin flow — include past hours so admins can backfill bookings
+    // for slots that have already started today.
+    await bookingProvider.fetchSlotsForSelectedDate(includePast: true);
     if (!context.mounted) return;
 
     final result = await showModalBottomSheet<Map<String, dynamic>>(
@@ -364,8 +455,8 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
         final startTime = DateTime(
             selectedDate.year, selectedDate.month, selectedDate.day, hour);
         final endTime = startTime.add(const Duration(hours: 1));
-        final basePrice =
-            bookingProvider.slotConfig?.getPriceForHour(hour);
+        final basePrice = bookingProvider.slotConfig
+            ?.getPriceForHour(hour, date: selectedDate);
 
         final booking = BookingEntity(
           userId:
@@ -446,8 +537,12 @@ class _NewBookingSheetState extends State<_NewBookingSheet> {
   }
 
   double get _totalPrice {
+    final date = widget.selectedDate;
     return _selectedHours.fold(0.0, (sum, h) {
-      return sum + (widget.bookingProvider.slotConfig?.getPriceForHour(h) ?? 0);
+      return sum +
+          (widget.bookingProvider.slotConfig
+                  ?.getPriceForHour(h, date: date) ??
+              0);
     });
   }
 
@@ -684,7 +779,7 @@ class _NewBookingSheetState extends State<_NewBookingSheet> {
                         final hour = slot.startTime.hour;
                         final isSelected = _selectedHours.contains(hour);
                         final price = widget.bookingProvider.slotConfig
-                            ?.getPriceForHour(hour);
+                            ?.getPriceForHour(hour, date: widget.selectedDate);
                         return _AdminSlotCard(
                           slot: slot,
                           isSelected: isSelected,
@@ -797,6 +892,7 @@ class _AdminSlotCard extends StatelessWidget {
     final cs = theme.colorScheme;
 
     final isPast = slot.isUnavailable;
+    final isPlayed = slot.isPlayed;
     final isBooked = slot.isBooked || slot.isBlocked;
     final isAvailable = slot.isAvailable;
 
@@ -832,6 +928,16 @@ class _AdminSlotCard extends StatelessWidget {
         child: const Icon(Icons.check_rounded,
             size: 12, color: AppColors.brandGreen),
       );
+    } else if (isPlayed) {
+      // Past + booked: game already happened. Distinct visual + locked.
+      bgColor = const Color(0xFF2563EB).withValues(alpha: 0.06);
+      borderColor = const Color(0xFF2563EB).withValues(alpha: 0.25);
+      timeColor = cs.onSurface.withValues(alpha: 0.45);
+      labelColor = const Color(0xFF2563EB);
+      labelText = 'Played';
+      leftIndicator = const Icon(Icons.check_circle_rounded,
+          size: 14, color: Color(0xFF2563EB));
+      rightWidget = null;
     } else if (isPast) {
       bgColor = AppColors.brandGreen.withValues(alpha: 0.06);
       borderColor = AppColors.brandGreen.withValues(alpha: 0.15);
@@ -994,11 +1100,15 @@ class _BookingCard extends StatelessWidget {
   final BookingEntity booking;
   final VoidCallback onMarkPaid;
   final VoidCallback onCancel;
+  final bool freeGameEligible;
+  final VoidCallback? onClaimFreeGame;
 
   const _BookingCard({
     required this.booking,
     required this.onMarkPaid,
     required this.onCancel,
+    this.freeGameEligible = false,
+    this.onClaimFreeGame,
   });
 
   @override
@@ -1043,26 +1153,47 @@ class _BookingCard extends StatelessWidget {
                   ),
                 ),
                 const Spacer(),
-                if (booking.isRegular) ...[
+                if (freeGameEligible) ...[
+                  const _Chip(
+                    label: '🎁 FREE GAME',
+                    color: AppColors.brandGreen,
+                  ),
+                  const SizedBox(width: 6),
+                ],
+                if (booking.isTournament) ...[
+                  const _Chip(
+                    label: 'TOURNAMENT',
+                    color: Color(0xFFE07820),
+                  ),
+                  const SizedBox(width: 6),
+                ] else if (booking.isMonthlyPlan) ...[
+                  const _Chip(
+                    label: 'PLAN',
+                    color: Color(0xFF5C5BD6),
+                  ),
+                  const SizedBox(width: 6),
+                ] else if (booking.isRegular) ...[
                   const _Chip(
                     label: 'REGULAR',
                     color: AppColors.brandGreen,
                   ),
                   const SizedBox(width: 6),
                 ],
-                if (booking.isPaid)
-                  const _Chip(
-                    label: 'PAID',
-                    color: Color(0xFF2563EB),
-                  )
-                else if (isActive && !booking.isRegular)
-                  const _Chip(label: 'UNPAID', color: Color(0xFFE6A020)),
-                if (!booking.isRegular) ...[
-                  const SizedBox(width: 6),
-                  _Chip(
-                    label: booking.status.value,
-                    color: _statusColor(booking.status, cs),
-                  ),
+                if (!booking.isMonthlyPlan && !booking.isTournament) ...[
+                  if (booking.isPaid)
+                    const _Chip(
+                      label: 'PAID',
+                      color: Color(0xFF2563EB),
+                    )
+                  else if (isActive && !booking.isRegular)
+                    const _Chip(label: 'UNPAID', color: Color(0xFFE6A020)),
+                  if (!booking.isRegular) ...[
+                    const SizedBox(width: 6),
+                    _Chip(
+                      label: booking.status.value,
+                      color: _statusColor(booking.status, cs),
+                    ),
+                  ],
                 ],
               ],
             ),
@@ -1115,34 +1246,58 @@ class _BookingCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                if (booking.amountPaid != null)
-                  Text(
-                    'Rs. ${booking.amountPaid!.toStringAsFixed(0)}',
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      color: AppColors.brandGreen,
-                      fontWeight: FontWeight.w700,
+                if (!booking.isMonthlyPlan && !booking.isTournament) ...[
+                  if (booking.amountPaid != null)
+                    Text(
+                      'Rs. ${booking.amountPaid!.toStringAsFixed(0)}',
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        color: AppColors.brandGreen,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    )
+                  else if (booking.basePrice != null)
+                    Text(
+                      'Rs. ${booking.basePrice!.toInt()}',
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        color: AppColors.brandGreen,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
-                  )
-                else if (booking.basePrice != null)
-                  Text(
-                    'Rs. ${booking.basePrice!.toInt()}',
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      color: AppColors.brandGreen,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
+                ],
               ],
             ),
           ),
 
-          if (isActive && !booking.isRegular) ...[
+          if (isActive &&
+              !booking.isMonthlyPlan &&
+              !booking.isTournament) ...[
             Divider(height: 1, color: cs.outlineVariant.withValues(alpha: 0.5)),
 
-            // Row 3: Actions
+            // Row 3: Actions. Regular synthetic entries skip Cancel
+            // (regulars are cancelled from the Regulars page) but keep
+            // Mark paid so admins can record the collection right here.
             Padding(
               padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
               child: Row(
                 children: [
+                  if (freeGameEligible && onClaimFreeGame != null) ...[
+                    FilledButton.icon(
+                      onPressed: onClaimFreeGame,
+                      icon: const Icon(Icons.card_giftcard_rounded, size: 15),
+                      label: const Text('Claim free'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.brandGreen,
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size(0, 34),
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        textStyle: const TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.w700),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
                   if (!booking.isPaid)
                     OutlinedButton.icon(
                       onPressed: onMarkPaid,
@@ -1178,23 +1333,25 @@ class _BookingCard extends StatelessWidget {
                             borderRadius: BorderRadius.circular(8)),
                       ),
                     ),
-                  const SizedBox(width: 8),
-                  OutlinedButton.icon(
-                    onPressed: onCancel,
-                    icon: const Icon(Icons.close_rounded, size: 15),
-                    label: const Text('Cancel'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: cs.error,
-                      side: BorderSide(color: cs.error.withValues(alpha: 0.5)),
-                      minimumSize: const Size(0, 34),
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 12),
-                      textStyle: const TextStyle(
-                          fontSize: 12, fontWeight: FontWeight.w600),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8)),
+                  if (!booking.isRegular) ...[
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      onPressed: onCancel,
+                      icon: const Icon(Icons.close_rounded, size: 15),
+                      label: const Text('Cancel'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: cs.error,
+                        side: BorderSide(color: cs.error.withValues(alpha: 0.5)),
+                        minimumSize: const Size(0, 34),
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: 12),
+                        textStyle: const TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.w600),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8)),
+                      ),
                     ),
-                  ),
+                  ],
                   const Spacer(),
                   IconButton(
                     onPressed: () {},

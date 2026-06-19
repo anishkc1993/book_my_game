@@ -48,7 +48,12 @@
           serviceWorkerVersion: serviceWorkerVersion,
         },
         onEntrypointLoaded: function(engineInitializer) {
-          engineInitializer.initializeEngine().then(function(appRunner) {
+          // Force CanvasKit on all platforms. The HTML renderer that Flutter
+          // picks by default on iOS Safari fails to load the Material Icons
+          // font, leaving icon buttons blank.
+          engineInitializer.initializeEngine({
+            renderer: 'canvaskit',
+          }).then(function(appRunner) {
             appRunner.runApp();
           });
         }

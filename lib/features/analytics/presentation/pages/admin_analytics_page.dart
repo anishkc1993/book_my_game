@@ -2,12 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../../../../core/constants/app_constants.dart';
 import '../../../../core/theme/app_theme.dart';
+import '../../domain/entities/analytics_entity.dart';
 import '../providers/analytics_provider.dart';
 import '../widgets/bookings_chart.dart';
 import '../widgets/revenue_chart.dart';
 import '../widgets/stat_card.dart';
 import '../widgets/time_period_selector.dart';
+import '../widgets/weekly_insights_card.dart';
 
 class AdminAnalyticsPage extends StatefulWidget {
   const AdminAnalyticsPage({super.key});
@@ -67,11 +70,30 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
                           Expanded(
                             child: Text(
                               'Analytics',
+                              overflow: TextOverflow.ellipsis,
                               style: theme.textTheme.titleLarge?.copyWith(
                                 fontWeight: FontWeight.w800,
                               ),
                             ),
                           ),
+                          // Icon-only header actions — title gets the slack
+                          // and the row never overflows on narrow phones.
+                          _IconActionButton(
+                            icon: Icons.schedule_rounded,
+                            color: const Color(0xFF2563EB),
+                            tooltip: 'Hourly breakdown',
+                            onTap: () =>
+                                context.push(RoutePaths.hourlyBreakdown),
+                          ),
+                          const SizedBox(width: 6),
+                          _IconActionButton(
+                            icon: Icons.calendar_today_outlined,
+                            color: AppColors.brandGreen,
+                            tooltip: 'Yearly revenue',
+                            onTap: () =>
+                                context.push(RoutePaths.yearlyRevenue),
+                          ),
+                          const SizedBox(width: 6),
                           if (provider.state != AnalyticsState.loading)
                             GestureDetector(
                               onTap: () =>
@@ -91,6 +113,16 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
                       ),
                     ),
                   ),
+
+                  // Weekly AI insights (Sun → today) — shows above the
+                  // period selector so it's always visible.
+                  if (provider.turfId != null && provider.turfId!.isNotEmpty)
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(0, 18, 0, 0),
+                        child: WeeklyInsightsCard(turfId: provider.turfId!),
+                      ),
+                    ),
 
                   // Period selector
                   SliverToBoxAdapter(
@@ -213,6 +245,77 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
         ),
       ),
 
+      // Cafe revenue (always visible) — NOT added to booking revenue.
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+          child: GestureDetector(
+            onTap: () => context.push(RoutePaths.concessions),
+            child: Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: const Color(0xFF2563EB).withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                    color:
+                        const Color(0xFF2563EB).withValues(alpha: 0.35)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF2563EB)
+                          .withValues(alpha: 0.18),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    alignment: Alignment.center,
+                    child: const Icon(Icons.local_cafe_rounded,
+                        size: 20, color: Color(0xFF2563EB)),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'CAFE COLLECTION',
+                          style: TextStyle(
+                            color: Color(0xFF2563EB),
+                            fontWeight: FontWeight.w800,
+                            fontSize: 11,
+                            letterSpacing: 1.2,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _formatCurrency(analytics.concessionRevenue),
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleLarge
+                              ?.copyWith(fontWeight: FontWeight.w800),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Text(
+                    '${analytics.concessionSalesCount} sale${analytics.concessionSalesCount == 1 ? '' : 's'}',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: const Color(0xFF2563EB),
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                  const SizedBox(width: 6),
+                  const Icon(Icons.chevron_right_rounded,
+                      size: 18, color: Color(0xFF2563EB)),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+
       // Revenue chart
       if (analytics.dailyRevenue.length > 1)
         SliverToBoxAdapter(
@@ -231,6 +334,12 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
               ],
             ),
           ),
+        ),
+
+      // Daily breakdown — Week / Month only (Today is a single number)
+      if (analytics.period != TimePeriod.today)
+        SliverToBoxAdapter(
+          child: _DailyBreakdown(analytics: analytics),
         ),
 
       // Bookings section
@@ -452,6 +561,252 @@ class _UtilizationCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ─── Daily breakdown ─────────────────────────────────────────────────────────
+
+class _DailyBreakdown extends StatelessWidget {
+  final AnalyticsEntity analytics;
+  const _DailyBreakdown({required this.analytics});
+
+  /// Slots that were actually bookable on [date], capped at "today" so
+  /// the current day's occupancy isn't penalized for hours still ahead.
+  int _availableSlotsFor(DateTime date) {
+    final hoursPerDay =
+        AppConstants.slotEndHour - AppConstants.slotStartHour;
+    final now = DateTime.now();
+    final isToday = date.year == now.year &&
+        date.month == now.month &&
+        date.day == now.day;
+    final isFuture = date.isAfter(DateTime(now.year, now.month, now.day));
+    if (isFuture) return 0;
+    if (isToday) {
+      // Use elapsed hours within the bookable window — clamp to [0, full].
+      final elapsed = now.hour - AppConstants.slotStartHour + 1;
+      return elapsed.clamp(0, hoursPerDay);
+    }
+    return hoursPerDay;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    // Pair revenue + bookings by date (they're parallel lists).
+    final byDate = <String, ({DateTime date, double revenue, int bookings})>{};
+    for (final r in analytics.dailyRevenue) {
+      final key = '${r.date.year}-${r.date.month}-${r.date.day}';
+      byDate[key] = (date: r.date, revenue: r.value, bookings: 0);
+    }
+    for (final b in analytics.dailyBookings) {
+      final key = '${b.date.year}-${b.date.month}-${b.date.day}';
+      final existing = byDate[key];
+      if (existing != null) {
+        byDate[key] = (
+          date: existing.date,
+          revenue: existing.revenue,
+          bookings: b.value.round(),
+        );
+      } else {
+        byDate[key] =
+            (date: b.date, revenue: 0, bookings: b.value.round());
+      }
+    }
+
+    // Show only days with activity, newest first.
+    final rows = byDate.values
+        .where((d) => d.revenue > 0 || d.bookings > 0)
+        .toList()
+      ..sort((a, b) => b.date.compareTo(a.date));
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.event_note_rounded,
+                  size: 18, color: AppColors.brandGreen),
+              const SizedBox(width: 8),
+              Text(
+                'Daily breakdown',
+                style: theme.textTheme.titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w800),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (rows.isEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: cs.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: cs.outlineVariant),
+              ),
+              child: Text(
+                'No activity in this period yet.',
+                style: theme.textTheme.bodyMedium
+                    ?.copyWith(color: cs.onSurfaceVariant),
+                textAlign: TextAlign.center,
+              ),
+            )
+          else
+            for (final row in rows) ...[
+              _DayRow(
+                date: row.date,
+                revenue: row.revenue,
+                bookings: row.bookings,
+                availableSlots: _availableSlotsFor(row.date),
+              ),
+              const SizedBox(height: 8),
+            ],
+        ],
+      ),
+    );
+  }
+}
+
+class _DayRow extends StatelessWidget {
+  final DateTime date;
+  final double revenue;
+  final int bookings;
+  final int availableSlots;
+  const _DayRow({
+    required this.date,
+    required this.revenue,
+    required this.bookings,
+    required this.availableSlots,
+  });
+
+  String _label(DateTime d) {
+    const wkd = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+    ];
+    return '${wkd[d.weekday - 1]} ${d.day} ${months[d.month - 1]}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final occupancy = (availableSlots > 0)
+        ? (bookings / availableSlots * 100).clamp(0, 100)
+        : 0.0;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 88,
+            child: Text(
+              _label(date),
+              style: theme.textTheme.titleSmall
+                  ?.copyWith(fontWeight: FontWeight.w800),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Rs. ${revenue.toInt()}',
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      availableSlots > 0
+                          ? '$bookings / $availableSlots'
+                          : '$bookings bookings',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: cs.onSurfaceVariant,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+                if (availableSlots > 0) ...[
+                  const SizedBox(height: 6),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: LinearProgressIndicator(
+                      value: occupancy / 100,
+                      minHeight: 5,
+                      backgroundColor:
+                          cs.surfaceContainerHighest.withValues(alpha: 0.4),
+                      valueColor: const AlwaysStoppedAnimation<Color>(
+                          AppColors.brandGreen),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          if (availableSlots > 0) ...[
+            const SizedBox(width: 10),
+            Text(
+              '${occupancy.toStringAsFixed(0)}%',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontWeight: FontWeight.w800,
+                color: AppColors.brandGreen,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Compact icon-only action button used in the analytics header. Keeps
+/// the title row clean on narrow phones while staying visually loud
+/// thanks to a tinted background + matching border.
+class _IconActionButton extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final String tooltip;
+  final VoidCallback onTap;
+  const _IconActionButton({
+    required this.icon,
+    required this.color,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(9),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: color.withValues(alpha: 0.4)),
+          ),
+          child: Icon(icon, size: 18, color: color),
+        ),
       ),
     );
   }
