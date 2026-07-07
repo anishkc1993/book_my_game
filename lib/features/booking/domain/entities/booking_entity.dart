@@ -49,6 +49,10 @@ class BookingEntity extends Equatable {
   final String? tournamentName;
   // Multi-tenant: which turf this booking belongs to.
   final String? turfId;
+  /// True when admin claimed a free game on this booking. Such bookings
+  /// have `amountPaid == 0`, do NOT count toward the leaderboard, and
+  /// do NOT count toward the next reward cycle for the customer.
+  final bool isFreeGame;
 
   const BookingEntity({
     this.id,
@@ -74,6 +78,7 @@ class BookingEntity extends Equatable {
     this.tournamentId,
     this.tournamentName,
     this.turfId,
+    this.isFreeGame = false,
   });
 
   bool get isPending => status == BookingStatus.pending;
@@ -117,5 +122,6 @@ class BookingEntity extends Equatable {
         tournamentId,
         tournamentName,
         turfId,
+        isFreeGame,
       ];
 }

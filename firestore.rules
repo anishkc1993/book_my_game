@@ -19,19 +19,20 @@ service cloud.firestore {
       allow write: if request.auth.uid == userId;
     }
 
-    // Turfs — anyone signed in can list/read (customers need to pick).
-    // Writes restricted: only the assigned admin can update their own turf.
+    // Turfs — public read so the no-auth schedule page can fetch turf
+    // name + admin phone. Writes still restricted to the assigned admin.
     match /turfs/{turfId} {
-      allow read: if request.auth != null;
+      allow read: if true;
       allow create: if request.auth != null
         && request.resource.data.adminPhone == request.auth.token.phone_number;
       allow update: if request.auth != null && isAdminAt(turfId);
       allow delete: if false;
 
-      // Per-turf settings (slot_config).
+      // Per-turf settings (slot_config). Public read so the no-auth
+      // schedule page knows which hours are bookable + the price bands.
+      // No PII in here.
       match /settings/{document=**} {
-        allow read: if request.auth != null
-          && callerTurfId() == turfId;
+        allow read: if true;
         allow write: if request.auth != null && isAdminAt(turfId);
       }
 
@@ -54,11 +55,12 @@ service cloud.firestore {
         allow write: if request.auth != null && isAdminAt(turfId);
       }
 
-      // Monthly subscription plans + their payment audit log.
-      // Admin-only writes. Reads gated on caller belonging to the turf.
+      // Monthly subscription plans — public read so the no-auth schedule
+      // page knows which weekday/hour slots are reserved by plans. Plan
+      // docs DO carry customer name/phone; the public UI strips those at
+      // display time. Admin-only writes still enforced.
       match /monthly_plans/{planId} {
-        allow read: if request.auth != null
-          && callerTurfId() == turfId;
+        allow read: if true;
         allow write: if request.auth != null && isAdminAt(turfId);
       }
       match /monthly_plan_payments/{paymentId} {
@@ -94,6 +96,13 @@ service cloud.firestore {
         allow write: if request.auth != null && isAdminAt(turfId);
       }
 
+      // Concession expense ledger — stock purchases, supplies, etc.
+      match /concession_expenses/{expenseId} {
+        allow read: if request.auth != null
+          && callerTurfId() == turfId;
+        allow write: if request.auth != null && isAdminAt(turfId);
+      }
+
       // Cached weekly AI insights — one doc per Sunday-anchored week.
       // Admin-only writes; reads gated on turf membership.
       match /insights/{weekKey} {
@@ -103,20 +112,21 @@ service cloud.firestore {
       }
     }
 
-    // Bookings — scoped by turfId. Caller's user.turfId must match.
+    // Bookings — public read so the no-auth schedule page can show
+    // which hours are taken. Booking docs carry customer name + phone;
+    // the public UI strips those at display time. Writes still gated on
+    // auth + turfId match.
     match /bookings/{bookingId} {
-      allow read: if request.auth != null
-        && resource.data.turfId == callerTurfId();
+      allow read: if true;
       allow create: if request.auth != null
         && request.resource.data.turfId == callerTurfId();
       allow update, delete: if request.auth != null
         && resource.data.turfId == callerTurfId();
     }
 
-    // Regular bookings — admin-only writes within own turf.
+    // Regular bookings — public read, admin-only writes.
     match /regular_bookings/{regularId} {
-      allow read: if request.auth != null
-        && resource.data.turfId == callerTurfId();
+      allow read: if true;
       allow create: if request.auth != null
         && request.resource.data.turfId == callerTurfId()
         && isAdminAt(callerTurfId());
@@ -125,10 +135,30 @@ service cloud.firestore {
         && isAdminAt(callerTurfId());
     }
 
-    // Leaderboard collection (cached rankings) — kept open for now.
-    match /leaderboard/{document=**} {
+    // Leaderboard cache (calculated rankings). The cache key is
+    // "{turfId}_{monthKey}" which can't be parsed in rules, so we
+    // restrict writes to any admin role (the app only writes from the
+    // admin UI). Reads are open to any authenticated user.
+    match /leaderboard/{cacheKey} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null;
+      allow write: if request.auth != null
+        && userDoc().role == 'ADMIN';
+
+      match /entries/{entryId} {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null
+          && userDoc().role == 'ADMIN';
+      }
+    }
+
+    // Leaderboard name overrides — one doc per turf (doc id = turfId).
+    // Admin-only writes; any signed-in member of that turf can read
+    // (rewards page and leaderboard page both need this).
+    match /leaderboard_overrides/{turfId} {
+      allow read: if request.auth != null
+        && callerTurfId() == turfId;
+      allow write: if request.auth != null
+        && isAdminAt(turfId);
     }
 
     // Legacy global settings (kept readable but slot_config now per-turf).

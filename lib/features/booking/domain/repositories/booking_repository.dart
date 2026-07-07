@@ -41,6 +41,13 @@ abstract class BookingRepository {
   /// Update booking status (admin).
   Future<void> updateBookingStatus(String bookingId, BookingStatus status);
 
+  /// Patch customer name / phone on a booking (admin).
+  Future<void> updateBookingCustomer(
+    String bookingId, {
+    String? customerName,
+    String? userPhone,
+  });
+
   /// Get slot configuration for the given turf.
   Future<SlotConfigEntity> getSlotConfig(String turfId);
 
@@ -49,7 +56,8 @@ abstract class BookingRepository {
       String turfId, List<int> enabledHours, String updatedBy);
 
   /// Update slot pricing (admin) for the given turf.
-  /// Optionally updates the loyalty free-game threshold in the same write.
+  /// Optionally updates the loyalty free-game threshold and the
+  /// dynamic Morning/Day/Evening band boundaries in the same write.
   Future<void> updateSlotPricing({
     required String turfId,
     required double morningPrice,
@@ -58,6 +66,8 @@ abstract class BookingRepository {
     required double weekendPrice,
     required String updatedBy,
     int? freeGameThreshold,
+    int? dayStartHour,
+    int? eveningStartHour,
   });
 
   /// Create a regular (recurring) booking. The booking's `turfId` MUST be set.
@@ -91,6 +101,23 @@ abstract class BookingRepository {
   Future<List<RewardEntity>> listRewards(String turfId);
 
   /// Claim the free game for this customer: resets progress to 0,
-  /// increments totalClaimed.
-  Future<void> claimFreeGame(String turfId, String phone);
+  /// increments totalClaimed. When [bookingId] is provided, marks that
+  /// booking as a free game (amount=0, isFreeGame=true) atomically.
+  Future<void> claimFreeGame(String turfId, String phone,
+      {String? bookingId});
+
+  /// Live reward count per customer phone, computed from booking docs
+  /// using the same rule the leaderboard uses. Free-game claims and
+  /// bookings before the customer's lastClaimedAt are excluded.
+  Future<Map<String, int>> liveRewardCounts(String turfId);
+
+  /// Distinct {name, phone} pairs from recent bookings at this turf.
+  Future<List<({String name, String phone})>> listRecentCustomers(
+    String turfId, {
+    int limit = 200,
+  });
+
+  /// Admin-only: mark a customer as not eligible for free-game rewards.
+  Future<void> setRewardExcluded(
+      String turfId, String phone, bool excluded);
 }

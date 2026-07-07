@@ -28,6 +28,13 @@ abstract class BookingRemoteDataSource {
   Future<BookingModel?> getBookingById(String bookingId);
   Future<void> markBookingAsPaid(String bookingId, double amount);
   Future<void> updateBookingStatus(String bookingId, String status);
+  /// Patch the customer name + phone on an existing booking. Both fields
+  /// are optional — pass null to leave unchanged.
+  Future<void> updateBookingCustomer(
+    String bookingId, {
+    String? customerName,
+    String? userPhone,
+  });
   Future<SlotConfigModel> getSlotConfig(String turfId);
   Future<void> updateSlotConfig(
       String turfId, List<int> enabledHours, String updatedBy);
@@ -39,6 +46,8 @@ abstract class BookingRemoteDataSource {
     required double weekendPrice,
     required String updatedBy,
     int? freeGameThreshold,
+    int? dayStartHour,
+    int? eveningStartHour,
   });
 
   Future<RegularBookingModel> createRegularBooking(RegularBookingModel booking);
@@ -53,7 +62,32 @@ abstract class BookingRemoteDataSource {
 
   Future<RewardModel> getReward(String turfId, String phone);
   Future<List<RewardModel>> listRewards(String turfId);
-  Future<void> claimFreeGame(String turfId, String phone);
+
+  /// Live reward count keyed by customer phone — computed directly from
+  /// booking docs the same way the leaderboard counts games: every
+  /// COMPLETED (or past-CONFIRMED) booking that isn't cancelled or
+  /// flagged as a free-game claim, restricted to the customer's current
+  /// cycle (after their lastClaimedAt timestamp, if any).
+  /// Returns: phone → progress count.
+  Future<Map<String, int>> liveRewardCounts(String turfId);
+  /// Claim a free game for [phone]. If [bookingId] is provided, that
+  /// booking gets stamped as a free game (amount=0, isFreeGame=true) in
+  /// the same atomic batch as the reward bump.
+  Future<void> claimFreeGame(String turfId, String phone,
+      {String? bookingId});
+
+  /// Mark a customer as not eligible for free-game rewards (or the
+  /// reverse). Progress still tracks under the hood.
+  Future<void> setRewardExcluded(
+      String turfId, String phone, bool excluded);
+
+  /// Distinct {name, phone} pairs from this turf's recent bookings, used
+  /// to power the "pick from past customers" suggestion list in the
+  /// Edit-details dialog.
+  Future<List<({String name, String phone})>> listRecentCustomers(
+    String turfId, {
+    int limit = 200,
+  });
 }
 
 class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
@@ -175,6 +209,11 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
       final start =
           DateTime(startDate.year, startDate.month, startDate.day);
       if (day.isBefore(start)) continue;
+      final endDateTs = (data['endDate'] as Timestamp?)?.toDate();
+      if (endDateTs != null) {
+        final end = DateTime(endDateTs.year, endDateTs.month, endDateTs.day);
+        if (day.isAfter(end)) continue;
+      }
       if (!daysOfWeek.contains(day.weekday)) continue;
       final slot = _PlanSlot(
         id: doc.id,
@@ -201,27 +240,35 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
       debugPrint('📅 getSlotsForDate: $turfId / ${_getDateKey(date)}'
           '${includePast ? " (incl past)" : ""}');
 
-      Set<int> enabledHours;
-      try {
-        final slotConfig = await getSlotConfig(turfId);
-        enabledHours = slotConfig.enabledHours.toSet();
-      } catch (e) {
-        debugPrint('⚠️ getSlotsForDate: Could not fetch slot config, defaults');
-        enabledHours = SlotConfigEntity.allPossibleHours.toSet();
-      }
-
-      final allSlots = SlotModel.generateSlotsForDate(date);
-      final enabledSlots = allSlots
-          .where((slot) => enabledHours.contains(slot.startTime.hour))
-          .toList();
-
       final dateKey = _getDateKey(date);
 
-      final bookingsSnapshot = await _firestore
+      // Fan out all reads in parallel — slot config, bookings, regulars,
+      // plans, and tournaments are independent of each other.
+      final configFuture = getSlotConfig(turfId)
+          .catchError((_) => SlotConfigModel.fromEntity(SlotConfigEntity.defaultConfig()));
+      final bookingsFuture = _firestore
           .collection(_bookingsCollection)
           .where('turfId', isEqualTo: turfId)
           .where('dateKey', isEqualTo: dateKey)
           .get();
+      final regularsFuture = _regularsForDate(turfId, date)
+          .catchError((_) => <int, RegularBookingModel>{});
+      final plansFuture = _plansForDate(turfId, date)
+          .catchError((_) => <int, _PlanSlot>{});
+      final tournamentsFuture = _tournamentsForDate(turfId, date)
+          .catchError((_) => <_TournamentSlot>[]);
+
+      final slotConfig = await configFuture;
+      final bookingsSnapshot = await bookingsFuture;
+      final regulars = await regularsFuture;
+      final plans = await plansFuture;
+      final tournaments = await tournamentsFuture;
+
+      final enabledHours = slotConfig.enabledHours.toSet();
+      final allSlots = SlotModel.generateSlotsForDate(date);
+      final enabledSlots = allSlots
+          .where((slot) => enabledHours.contains(slot.startTime.hour))
+          .toList();
 
       debugPrint(
           '📅 getSlotsForDate: Found ${bookingsSnapshot.docs.length} bookings');
@@ -230,9 +277,6 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
       for (final doc in bookingsSnapshot.docs) {
         final data = doc.data();
         final status = data['status'] as String?;
-        // COMPLETED counts too — once the sweep auto-completes a past
-        // booking, that hour must still register as occupied so the slot
-        // is shown as Played (not free for the admin to re-book).
         if (status == 'PENDING' ||
             status == 'CONFIRMED' ||
             status == 'COMPLETED') {
@@ -241,29 +285,12 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
         }
       }
 
-      final regulars = await _regularsForDate(turfId, date);
       bookedHours.addAll(regulars.keys);
-
-      // Active monthly plans also reserve their scheduled hours. Wrapped
-      // so a missing collection / denied read doesn't kill the grid.
-      try {
-        final plans = await _plansForDate(turfId, date);
-        bookedHours.addAll(plans.keys);
-      } catch (e) {
-        debugPrint('⚠️ slot grid: plan reservations skipped: $e');
-      }
-
-      // Tournaments take a full hour range — block every hour in the
-      // window so the slot grid greys them all out.
-      try {
-        final tournaments = await _tournamentsForDate(turfId, date);
-        for (final t in tournaments) {
-          for (int h = t.startHour; h < t.endHour; h++) {
-            bookedHours.add(h);
-          }
+      bookedHours.addAll(plans.keys);
+      for (final t in tournaments) {
+        for (int h = t.startHour; h < t.endHour; h++) {
+          bookedHours.add(h);
         }
-      } catch (e) {
-        debugPrint('⚠️ slot grid: tournament reservations skipped: $e');
       }
 
       final now = DateTime.now();
@@ -272,14 +299,8 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
           date.day == now.day;
 
       final updatedSlots = enabledSlots.map((slot) {
-        final isPastHour =
-            isToday && slot.startTime.hour <= now.hour;
+        final isPastHour = isToday && slot.startTime.hour <= now.hour;
         final isBooked = bookedHours.contains(slot.startTime.hour);
-        // Past + booked → game's already done. Mark "played" so the UI
-        // can label it distinctly while keeping it non-selectable. This
-        // applies to both customer and admin views (admins can see past
-        // empty slots as available because of includePast, but a past
-        // booked slot is still past — and the game already happened).
         if (isPastHour && isBooked) {
           return slot.copyWith(status: SlotStatus.played);
         }
@@ -311,11 +332,16 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
 
       final dateKey = _getDateKey(booking.date);
 
-      final existingBookings = await _firestore
+      // Conflict check and regular guard read in parallel.
+      final existingFuture = _firestore
           .collection(_bookingsCollection)
           .where('turfId', isEqualTo: booking.turfId)
           .where('dateKey', isEqualTo: dateKey)
           .get();
+      final regularsFuture = _regularsForDate(booking.turfId!, booking.date);
+
+      final existingBookings = await existingFuture;
+      final regulars = await regularsFuture;
 
       for (final doc in existingBookings.docs) {
         final data = doc.data();
@@ -332,7 +358,6 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
         }
       }
 
-      final regulars = await _regularsForDate(booking.turfId!, booking.date);
       if (regulars.containsKey(booking.startTime.hour)) {
         throw const ServerException(
             'This slot is reserved by a regular booking');
@@ -415,11 +440,20 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
 
       final dateKey = _getDateKey(booking.date);
 
-      final existingBookings = await _firestore
+      // Conflict check and regular guard in parallel. Skip the regulars
+      // fetch when the booking IS a regular materialization — otherwise
+      // the regular's hour would block the very record we're creating.
+      final existingFuture = _firestore
           .collection(_bookingsCollection)
           .where('turfId', isEqualTo: booking.turfId)
           .where('dateKey', isEqualTo: dateKey)
           .get();
+      final regularsFuture = booking.isRegular
+          ? Future.value(<int, RegularBookingModel>{})
+          : _regularsForDate(booking.turfId!, booking.date);
+
+      final existingBookings = await existingFuture;
+      final regulars = await regularsFuture;
 
       for (final doc in existingBookings.docs) {
         final data = doc.data();
@@ -432,17 +466,9 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
         }
       }
 
-      // Regular-slot guard — but skip it when the booking IS the regular's
-      // own materialization (mark-paid for a synthetic regular entry).
-      // Otherwise the regular's hour blocks the very record we're creating
-      // to recognize the payment.
-      if (!booking.isRegular) {
-        final regulars =
-            await _regularsForDate(booking.turfId!, booking.date);
-        if (regulars.containsKey(booking.startTime.hour)) {
-          throw const ServerException(
-              'This slot is reserved by a regular booking');
-        }
+      if (!booking.isRegular && regulars.containsKey(booking.startTime.hour)) {
+        throw const ServerException(
+            'This slot is reserved by a regular booking');
       }
 
       final docRef = await _firestore
@@ -463,11 +489,25 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
     try {
       final dateKey = _getDateKey(date);
 
-      final snapshot = await _firestore
+      // Fan out all reads in parallel — bookings, regulars, plans, and
+      // tournaments are independent of each other. Synthesis order still
+      // matters (regulars → plans → tournaments) but the I/O doesn't.
+      final bookingsFuture = _firestore
           .collection(_bookingsCollection)
           .where('turfId', isEqualTo: turfId)
           .where('dateKey', isEqualTo: dateKey)
           .get();
+      final regularsFuture = _regularsForDate(turfId, date)
+          .catchError((_) => <int, RegularBookingModel>{});
+      final plansFuture = _plansForDate(turfId, date)
+          .catchError((_) => <int, _PlanSlot>{});
+      final tournamentsFuture = _tournamentsForDate(turfId, date)
+          .catchError((_) => <_TournamentSlot>[]);
+
+      final snapshot = await bookingsFuture;
+      final regulars = await regularsFuture;
+      final plans = await plansFuture;
+      final tournaments = await tournamentsFuture;
 
       // Cancelled bookings are dropped from the day view entirely —
       // showing them takes a slot in the list and prevents the synthesizer
@@ -478,105 +518,82 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
           .where((b) => !b.isCancelled)
           .toList();
 
-      // Synthesize virtual entries for active regulars matching this date.
-      // Wrapped — a denied/failed regulars query must NOT take down the
-      // real bookings list.
-      try {
-        final realHours = bookings.map((b) => b.startTime.hour).toSet();
-        final regulars = await _regularsForDate(turfId, date);
-        regulars.forEach((hour, reg) {
-          if (realHours.contains(hour)) return;
-          final start = DateTime(date.year, date.month, date.day, hour);
-          final end = DateTime(date.year, date.month, date.day, hour + 1);
-          bookings.add(BookingModel(
-            id: 'regular_${reg.id}_$dateKey',
-            userId: '',
-            userPhone: reg.userPhone,
-            customerName: reg.customerName,
-            date: date,
-            startTime: start,
-            endTime: end,
-            status: BookingStatus.confirmed,
-            isPaid: false,
-            basePrice: reg.basePrice,
-            createdByAdmin: reg.createdByAdmin,
-            createdAt: reg.createdAt,
-            isRegular: true,
-            regularBookingId: reg.id,
-            turfId: turfId,
-          ));
-        });
-      } catch (e) {
-        debugPrint('⚠️ regulars synth failed (continuing): $e');
-      }
+      // Synthesize virtual entries for active regulars.
+      final realHours = bookings.map((b) => b.startTime.hour).toSet();
+      regulars.forEach((hour, reg) {
+        if (realHours.contains(hour)) return;
+        final start = DateTime(date.year, date.month, date.day, hour);
+        final end = DateTime(date.year, date.month, date.day, hour + 1);
+        bookings.add(BookingModel(
+          id: 'regular_${reg.id}_$dateKey',
+          userId: '',
+          userPhone: reg.userPhone,
+          customerName: reg.customerName,
+          date: date,
+          startTime: start,
+          endTime: end,
+          status: BookingStatus.confirmed,
+          isPaid: false,
+          basePrice: reg.basePrice,
+          createdByAdmin: reg.createdByAdmin,
+          createdAt: reg.createdAt,
+          isRegular: true,
+          regularBookingId: reg.id,
+          turfId: turfId,
+        ));
+      });
 
-      // Synthesize virtual entries for active monthly plans matching the
-      // date. Plans never persist booking docs (so leaderboard ignores
-      // them); they only surface in today's pitch / day view.
-      // Wrapped for the same reason — if plans collection doesn't exist
-      // yet or rules deny, we still want the real bookings to render.
-      try {
-        final plansTaken = bookings.map((b) => b.startTime.hour).toSet();
-        final plans = await _plansForDate(turfId, date);
-        plans.forEach((hour, plan) {
-          if (plansTaken.contains(hour)) return;
-          final start = DateTime(date.year, date.month, date.day, hour);
-          final end = DateTime(date.year, date.month, date.day, hour + 1);
-          bookings.add(BookingModel(
-            id: 'plan_${plan.id}_$dateKey',
-            userId: '',
-            userPhone: plan.userPhone,
-            customerName: plan.customerName,
-            date: date,
-            startTime: start,
-            endTime: end,
-            status: BookingStatus.confirmed,
-            // Plans pre-paid monthly — surface as already-paid on the day
-            // view so they don't show as "pending revenue".
-            isPaid: true,
-            basePrice: plan.monthlyFee,
-            isMonthlyPlan: true,
-            monthlyPlanId: plan.id,
-            turfId: turfId,
-          ));
-        });
-      } catch (e) {
-        debugPrint('⚠️ plans synth failed (continuing): $e');
-      }
+      // Synthesize virtual entries for active monthly plans.
+      // Plans never persist booking docs so the leaderboard ignores them.
+      final plansTaken = bookings.map((b) => b.startTime.hour).toSet();
+      plans.forEach((hour, plan) {
+        if (plansTaken.contains(hour)) return;
+        final start = DateTime(date.year, date.month, date.day, hour);
+        final end = DateTime(date.year, date.month, date.day, hour + 1);
+        bookings.add(BookingModel(
+          id: 'plan_${plan.id}_$dateKey',
+          userId: '',
+          userPhone: plan.userPhone,
+          customerName: plan.customerName,
+          date: date,
+          startTime: start,
+          endTime: end,
+          status: BookingStatus.confirmed,
+          isPaid: true,
+          basePrice: plan.monthlyFee,
+          isMonthlyPlan: true,
+          monthlyPlanId: plan.id,
+          turfId: turfId,
+        ));
+      });
 
-      // Tournaments take precedence — any booking falling inside a
-      // tournament hour window is suppressed and replaced by a single
-      // tournament entry spanning the full range.
-      try {
-        final tournaments = await _tournamentsForDate(turfId, date);
-        for (final t in tournaments) {
-          bookings.removeWhere((b) {
-            final h = b.startTime.hour;
-            return h >= t.startHour && h < t.endHour;
-          });
-          final start = DateTime(date.year, date.month, date.day, t.startHour);
-          final end = DateTime(date.year, date.month, date.day, t.endHour);
-          bookings.add(BookingModel(
-            id: 'tournament_${t.id}_$dateKey',
-            userId: '',
-            userPhone: t.organizerPhone,
-            customerName: t.organizerName,
-            date: date,
-            startTime: start,
-            endTime: end,
-            status: BookingStatus.confirmed,
-            isPaid: t.isPaid,
-            basePrice: t.totalAmount,
-            amountPaid: t.amountPaid,
-            paidAt: t.paidAt,
-            isTournament: true,
-            tournamentId: t.id,
-            tournamentName: t.name,
-            turfId: turfId,
-          ));
-        }
-      } catch (e) {
-        debugPrint('⚠️ tournament synth failed (continuing): $e');
+      // Tournaments take precedence — suppress any booking inside the
+      // tournament window and replace with a single spanning entry.
+      for (final t in tournaments) {
+        bookings.removeWhere((b) {
+          final h = b.startTime.hour;
+          return h >= t.startHour && h < t.endHour;
+        });
+        final start = DateTime(date.year, date.month, date.day, t.startHour);
+        final end = DateTime(date.year, date.month, date.day, t.endHour);
+        bookings.add(BookingModel(
+          id: 'tournament_${t.id}_$dateKey',
+          userId: '',
+          userPhone: t.organizerPhone,
+          customerName: t.organizerName,
+          date: date,
+          startTime: start,
+          endTime: end,
+          status: BookingStatus.confirmed,
+          isPaid: t.isPaid,
+          basePrice: t.totalAmount,
+          amountPaid: t.amountPaid,
+          paidAt: t.paidAt,
+          isTournament: true,
+          tournamentId: t.id,
+          tournamentName: t.name,
+          turfId: turfId,
+        ));
       }
 
       bookings.sort((a, b) => a.startTime.compareTo(b.startTime));
@@ -597,6 +614,27 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
       });
     } catch (e) {
       throw ServerException('Failed to update payment status: ${e.toString()}');
+    }
+  }
+
+  @override
+  Future<void> updateBookingCustomer(
+    String bookingId, {
+    String? customerName,
+    String? userPhone,
+  }) async {
+    try {
+      final updates = <String, dynamic>{};
+      if (customerName != null) updates['customerName'] = customerName;
+      if (userPhone != null) updates['userPhone'] = userPhone;
+      if (updates.isEmpty) return;
+      updates['updatedAt'] = FieldValue.serverTimestamp();
+      await _firestore
+          .collection(_bookingsCollection)
+          .doc(bookingId)
+          .update(updates);
+    } catch (e) {
+      throw ServerException('Failed to update customer: ${e.toString()}');
     }
   }
 
@@ -672,6 +710,8 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
     required double weekendPrice,
     required String updatedBy,
     int? freeGameThreshold,
+    int? dayStartHour,
+    int? eveningStartHour,
   }) async {
     try {
       final current = await getSlotConfig(turfId);
@@ -682,8 +722,10 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
         eveningPrice: eveningPrice,
         weekendPrice: weekendPrice,
         updatedBy: updatedBy,
-        // Preserve the existing threshold if the caller didn't pass one.
+        // Preserve any field the caller didn't pass.
         freeGameThreshold: freeGameThreshold ?? current.freeGameThreshold,
+        dayStartHour: dayStartHour ?? current.dayStartHour,
+        eveningStartHour: eveningStartHour ?? current.eveningStartHour,
       );
 
       await _slotConfigDoc(turfId).set(config.toFirestore());
@@ -1083,18 +1125,175 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
   }
 
   @override
-  Future<void> claimFreeGame(String turfId, String phone) async {
+  Future<void> setRewardExcluded(
+      String turfId, String phone, bool excluded) async {
     try {
       await _rewardDoc(turfId, phone).set({
         'userPhone': phone,
-        'progressCount': 0,
-        'totalClaimed': FieldValue.increment(1),
-        'lastClaimedAt': FieldValue.serverTimestamp(),
+        'excluded': excluded,
         'lastUpdated': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     } catch (e) {
+      debugPrint('❌ setRewardExcluded: $e');
+      throw ServerException(
+          'Failed to update exclusion: ${e.toString()}');
+    }
+  }
+
+  @override
+  Future<Map<String, int>> liveRewardCounts(String turfId) async {
+    try {
+      // Get all reward docs first so we know each customer's cycle start
+      // (lastClaimedAt) — bookings before this timestamp are "consumed"
+      // by a previous claim and don't count toward the new cycle.
+      final rewardsSnap = await _firestore
+          .collection(_turfsCollection)
+          .doc(turfId)
+          .collection('rewards')
+          .get();
+      final cycleStart = <String, DateTime>{};
+      for (final d in rewardsSnap.docs) {
+        final phone = d.data()['userPhone'] as String? ?? '';
+        if (phone.isEmpty) continue;
+        final ts = (d.data()['lastClaimedAt'] as Timestamp?)?.toDate();
+        if (ts != null) cycleStart[_normalizePhone(phone)] = ts;
+      }
+
+      // Pull every non-cancelled booking for this turf and count them
+      // per customer using the same rule the leaderboard uses.
+      final snap = await _firestore
+          .collection(_bookingsCollection)
+          .where('turfId', isEqualTo: turfId)
+          .get();
+      final nowTs = DateTime.now();
+      final counts = <String, int>{};
+      for (final d in snap.docs) {
+        final data = d.data();
+        final status = data['status'] as String?;
+        if (status == 'CANCELLED') continue;
+        if (data['isFreeGame'] as bool? ?? false) continue;
+        final endTime = (data['endTime'] as Timestamp?)?.toDate();
+        final played = status == 'COMPLETED' ||
+            (status == 'CONFIRMED' &&
+                endTime != null &&
+                endTime.isBefore(nowTs));
+        if (!played) continue;
+        final phoneRaw = data['userPhone'] as String? ?? '';
+        if (phoneRaw.isEmpty) continue;
+        final phone = _normalizePhone(phoneRaw);
+        if (phone.isEmpty) continue;
+        // Cycle gate: skip bookings before the customer's lastClaimedAt.
+        final start = cycleStart[phone];
+        final played_at =
+            (data['startTime'] as Timestamp?)?.toDate() ?? endTime;
+        if (start != null && played_at != null && !played_at.isAfter(start)) {
+          continue;
+        }
+        counts[phone] = (counts[phone] ?? 0) + 1;
+      }
+      return counts;
+    } catch (e) {
+      debugPrint('❌ liveRewardCounts: $e');
+      return {};
+    }
+  }
+
+  /// Strip non-digit chars + the Nepal country code so the same customer
+  /// isn't tracked as multiple keys across `+9779…`, `9779…`, `9…`.
+  String _normalizePhone(String raw) {
+    var d = raw.replaceAll(RegExp(r'\D'), '');
+    if (d.startsWith('977') && d.length > 10) d = d.substring(3);
+    return d;
+  }
+
+  @override
+  Future<void> claimFreeGame(String turfId, String phone,
+      {String? bookingId}) async {
+    try {
+      final batch = _firestore.batch();
+      // 1) Reward bookkeeping — bump claim counter, stamp lastClaimedAt
+      //    (used as the start of the customer's next reward cycle), and
+      //    reset progressCount for legacy callers.
+      batch.set(
+          _rewardDoc(turfId, phone),
+          {
+            'userPhone': phone,
+            'progressCount': 0,
+            'totalClaimed': FieldValue.increment(1),
+            'lastClaimedAt': FieldValue.serverTimestamp(),
+            'lastUpdated': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true));
+      // 2) Mark the specific booking as a free game so:
+      //    - leaderboard excludes it
+      //    - revenue (amountPaid) is 0
+      //    - reward count for the new cycle excludes it too
+      if (bookingId != null && bookingId.isNotEmpty) {
+        batch.update(
+            _firestore.collection(_bookingsCollection).doc(bookingId), {
+          'isFreeGame': true,
+          'isPaid': true,
+          'amountPaid': 0,
+          'paidAt': FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+    } catch (e) {
       debugPrint('❌ claimFreeGame: $e');
       throw ServerException('Failed to claim free game: ${e.toString()}');
+    }
+  }
+
+  @override
+  Future<List<({String name, String phone})>> listRecentCustomers(
+    String turfId, {
+    int limit = 200,
+  }) async {
+    try {
+      // Single-field equality query — no composite index needed. The
+      // earlier version added `orderBy('createdAt')` which silently
+      // failed on projects that hadn't built the (turfId, createdAt)
+      // index, returning an empty list with no error surfaced.
+      // We pull a generous slice and sort client-side instead.
+      Query<Map<String, dynamic>> q = _firestore
+          .collection(_bookingsCollection)
+          .where('turfId', isEqualTo: turfId);
+      if (limit > 0) q = q.limit(limit * 5);
+      final snap = await q.get();
+      // Dedup by normalized phone (strip non-digits + +977 prefix) so
+      // the same customer doesn't appear twice with different stored
+      // representations. Most-recent name wins for each phone.
+      String normalize(String raw) {
+        var d = raw.replaceAll(RegExp(r'\D'), '');
+        if (d.startsWith('977') && d.length > 10) d = d.substring(3);
+        return d;
+      }
+      final byPhone = <String, ({String name, String phone})>{};
+      for (final doc in snap.docs) {
+        final data = doc.data();
+        final rawPhone = (data['userPhone'] as String?) ?? '';
+        if (rawPhone.isEmpty) continue;
+        final norm = normalize(rawPhone);
+        if (norm.isEmpty) continue;
+        if (byPhone.containsKey(norm)) continue;
+        final name = (data['customerName'] as String?)?.trim() ?? '';
+        byPhone[norm] = (name: name, phone: rawPhone);
+      }
+      // Sort by name (empty names last) — gives stable suggestion order.
+      final out = byPhone.values.toList()
+        ..sort((a, b) {
+          if (a.name.isEmpty != b.name.isEmpty) {
+            return a.name.isEmpty ? 1 : -1;
+          }
+          return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+        });
+      return out;
+    } catch (e) {
+      debugPrint('❌ listRecentCustomers: $e');
+      // Surface the failure so the dialog shows a useful error instead
+      // of pretending the list is empty.
+      throw ServerException(
+          'Failed to load past customers: ${e.toString()}');
     }
   }
 }

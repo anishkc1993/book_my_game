@@ -43,7 +43,12 @@ class AnalyticsProvider extends ChangeNotifier {
   Future<void> fetchAnalytics({bool forceRefresh = false}) async {
     if (!_hasTurf) return;
 
-    if (!forceRefresh && _analyticsCache.containsKey(_selectedPeriod)) {
+    // "Today" period mutates throughout the day as bookings get marked
+    // paid / regulars materialize / cafe sales come in — never serve from
+    // cache for it, otherwise the page diverges from the dashboard.
+    final skipCache = forceRefresh || _selectedPeriod == TimePeriod.today;
+
+    if (!skipCache && _analyticsCache.containsKey(_selectedPeriod)) {
       _state = AnalyticsState.loaded;
       notifyListeners();
       return;

@@ -24,6 +24,14 @@ abstract class LeaderboardRemoteDataSource {
     required List<String> sourcePhones,
     required String targetPhone,
   });
+
+  /// Persist a display-name override for [phone] so recalculations
+  /// always show this name regardless of what's stored in bookings.
+  Future<void> setNameOverride({
+    required String turfId,
+    required String phone,
+    required String name,
+  });
 }
 
 class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
@@ -32,6 +40,7 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
 
   static const String _bookingsCollection = 'bookings';
   static const String _leaderboardCollection = 'leaderboard';
+  static const String _overridesCollection = 'leaderboard_overrides';
   static const String _lastUpdateKey = 'leaderboard_last_update';
   static const String _monthKeyPref = 'leaderboard_month_key';
 
@@ -70,6 +79,49 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
     return digits;
   }
 
+  Future<Map<String, String>> _fetchNameOverrides(String turfId) async {
+    try {
+      final doc = await _firestore
+          .collection(_overridesCollection)
+          .doc(turfId)
+          .get();
+      if (!doc.exists) return {};
+      final raw = doc.data()?['names'] as Map<String, dynamic>? ?? {};
+      return raw.map((k, v) => MapEntry(k, v as String));
+    } catch (e) {
+      debugPrint('⚠️ _fetchNameOverrides: $e');
+      return {};
+    }
+  }
+
+  List<LeaderboardEntryModel> _applyNameOverrides(
+    List<LeaderboardEntryModel> entries,
+    Map<String, String> overrides,
+  ) {
+    if (overrides.isEmpty) return entries;
+    return entries.map((e) {
+      final normalized = _normalizePhone(e.phoneNumber);
+      final override = overrides[normalized];
+      if (override != null && override.isNotEmpty) {
+        return e.copyWith(customerName: override);
+      }
+      return e;
+    }).toList();
+  }
+
+  @override
+  Future<void> setNameOverride({
+    required String turfId,
+    required String phone,
+    required String name,
+  }) async {
+    final normalized = _normalizePhone(phone);
+    await _firestore.collection(_overridesCollection).doc(turfId).set(
+      {'names': {normalized: name.trim()}},
+      SetOptions(merge: true),
+    );
+  }
+
   @override
   Future<List<LeaderboardEntryModel>> getMonthlyLeaderboard({
     required String turfId,
@@ -84,6 +136,9 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
 
       debugPrint('🏆 getMonthlyLeaderboard: turf=$turfId month=$currentMonthKey, cached=$cachedMonthKey');
 
+      // Fetch name overrides once — applied to both cached and fresh results.
+      final overrides = await _fetchNameOverrides(turfId);
+
       // Check if we need to refresh (new month, new turf, or force refresh)
       final needsRefresh = forceRefresh || cachedMonthKey != cacheKey;
 
@@ -91,18 +146,19 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
         final cachedData = await _getCachedLeaderboard(cacheKey);
         if (cachedData.isNotEmpty) {
           debugPrint('🏆 getMonthlyLeaderboard: Cached (${cachedData.length})');
-          return cachedData;
+          return _applyNameOverrides(cachedData, overrides);
         }
       }
 
       debugPrint('🏆 getMonthlyLeaderboard: Calculating fresh');
       final leaderboard = await _calculateLeaderboard(turfId, now);
+      final withOverrides = _applyNameOverrides(leaderboard, overrides);
 
-      await _cacheLeaderboard(leaderboard, cacheKey);
+      await _cacheLeaderboard(withOverrides, cacheKey);
       await _prefs.setString(_monthKeyPref, cacheKey);
       await _prefs.setString(_lastUpdateKey, now.toIso8601String());
 
-      return leaderboard;
+      return withOverrides;
     } catch (e) {
       debugPrint('❌ getMonthlyLeaderboard ERROR: $e');
       throw ServerException('Failed to fetch leaderboard: ${e.toString()}');
@@ -130,21 +186,43 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
 
   Future<List<LeaderboardEntryModel>> _calculateLeaderboard(
       String turfId, DateTime now) async {
+    // Kept only for the LeaderboardEntry.monthStart/monthEnd fields the
+    // UI card still reads (it just shows the current period label —
+    // ranking is now cumulative, not month-bounded).
     final monthStart = _getMonthStart(now);
     final monthEnd = _getMonthEnd(now);
 
-    debugPrint('🏆 Calculating leaderboard for turf=$turfId $monthStart to $monthEnd');
+    debugPrint('🏆 Calculating leaderboard (all-time) for turf=$turfId');
 
-    // Fetch all bookings at this turf for the month. The turfId filter is
-    // required by Firestore rules under multi-tenant.
+    // Pull each customer's last-claim timestamp so we can apply the same
+    // "cycle reset" rule the rewards page uses — bookings BEFORE a
+    // customer's last claim were already consumed and don't count.
+    final cycleStart = <String, DateTime>{};
+    try {
+      final rewardsSnap = await _firestore
+          .collection('turfs')
+          .doc(turfId)
+          .collection('rewards')
+          .get();
+      for (final d in rewardsSnap.docs) {
+        final phone = d.data()['userPhone'] as String? ?? '';
+        if (phone.isEmpty) continue;
+        final ts = (d.data()['lastClaimedAt'] as Timestamp?)?.toDate();
+        if (ts != null) cycleStart[_normalizePhone(phone)] = ts;
+      }
+    } catch (e) {
+      debugPrint('⚠️ leaderboard rewards lookup failed: $e');
+    }
+
+    // Fetch ALL bookings at this turf — leaderboard is now ranked by
+    // total lifetime games played, not this month's games. The turfId
+    // filter is required by multi-tenant rules.
     final snapshot = await _firestore
         .collection(_bookingsCollection)
         .where('turfId', isEqualTo: turfId)
-        .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(monthStart))
-        .where('date', isLessThanOrEqualTo: Timestamp.fromDate(monthEnd))
         .get();
 
-    debugPrint('🏆 Found ${snapshot.docs.length} bookings for the month');
+    debugPrint('🏆 Found ${snapshot.docs.length} bookings (all-time)');
 
     // Aggregate by phone number
     final Map<String, _BookingAggregation> aggregations = {};
@@ -156,6 +234,8 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
 
       // Skip cancelled outright.
       if (status == 'CANCELLED') continue;
+      // Skip claimed free games — they don't count toward leaderboard.
+      if (data['isFreeGame'] as bool? ?? false) continue;
 
       // Only count games that have actually been played:
       // - status == COMPLETED (sweep already moved it), OR
@@ -177,12 +257,31 @@ class LeaderboardRemoteDataSourceImpl implements LeaderboardRemoteDataSource {
       final phone = _normalizePhone(rawPhone);
       if (phone.isEmpty) continue;
 
-      final customerName = data['customerName'] as String?;
+      // Cycle gate: drop bookings before this customer's last claim.
+      // Same rule the rewards page uses → after claiming a free game,
+      // the games that earned it stop counting for the leaderboard.
+      final cs = cycleStart[phone];
+      final startTs = (data['startTime'] as Timestamp?)?.toDate();
+      if (cs != null && startTs != null && !startTs.isAfter(cs)) {
+        continue;
+      }
+
+      // "Anonymous" gets treated as if the name were empty so any other
+      // real name attached to this customer's other bookings wins.
+      final rawName = data['customerName'] as String?;
+      final customerName =
+          (rawName != null && rawName.trim().isNotEmpty &&
+                  rawName.trim().toLowerCase() != 'anonymous')
+              ? rawName.trim()
+              : null;
 
       if (aggregations.containsKey(phone)) {
         aggregations[phone]!.count++;
-        // Use most recent customer name if available
-        if (customerName != null && customerName.isNotEmpty) {
+        // Prefer the first real name we see. Don't overwrite a real
+        // name with a later blank / "Anonymous" one.
+        if (customerName != null &&
+            (aggregations[phone]!.customerName == null ||
+                aggregations[phone]!.customerName!.isEmpty)) {
           aggregations[phone]!.customerName = customerName;
         }
       } else {

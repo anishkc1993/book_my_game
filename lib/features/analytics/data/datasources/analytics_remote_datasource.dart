@@ -16,9 +16,12 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
   AnalyticsRemoteDataSourceImpl({FirebaseFirestore? firestore})
       : _firestore = firestore ?? FirebaseFirestore.instance;
 
-  /// Sum of monthly_plan_payments at [turfId] with `paidAt` in [start, end).
-  Future<double> _sumPlanPayments(
-      String turfId, DateTime start, DateTime end) async {
+  /// Sum of monthly_plan_payments at [turfId] with `paidAt` in [start, end),
+  /// bucketed by date key so the analytics daily breakdown can attribute
+  /// the lump-sum payment to the day admin marked it paid.
+  Future<({double total, Map<String, double> byDateKey})>
+      _planPaymentsByDay(
+          String turfId, DateTime start, DateTime end) async {
     try {
       final snap = await _firestore
           .collection('turfs')
@@ -28,13 +31,20 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
           .where('paidAt', isLessThan: Timestamp.fromDate(end))
           .get();
       double total = 0;
+      final byDate = <String, double>{};
       for (final d in snap.docs) {
-        total += (d.data()['amount'] as num?)?.toDouble() ?? 0;
+        final amt = (d.data()['amount'] as num?)?.toDouble() ?? 0;
+        total += amt;
+        final paidTs = (d.data()['paidAt'] as Timestamp?)?.toDate();
+        if (paidTs != null) {
+          final key = _getDateKey(paidTs);
+          byDate[key] = (byDate[key] ?? 0) + amt;
+        }
       }
-      return total;
+      return (total: total, byDateKey: byDate);
     } catch (e) {
-      debugPrint('⚠️ _sumPlanPayments failed: $e');
-      return 0;
+      debugPrint('⚠️ _planPaymentsByDay failed: $e');
+      return (total: 0.0, byDateKey: const <String, double>{});
     }
   }
 
@@ -62,8 +72,9 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
   }
 
   /// Sum of tournament_payments at [turfId] with `paidAt` in [start, end).
-  Future<double> _sumTournamentPayments(
-      String turfId, DateTime start, DateTime end) async {
+  Future<({double total, Map<String, double> byDateKey})>
+      _tournamentPaymentsByDay(
+          String turfId, DateTime start, DateTime end) async {
     try {
       final snap = await _firestore
           .collection('turfs')
@@ -73,13 +84,20 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
           .where('paidAt', isLessThan: Timestamp.fromDate(end))
           .get();
       double total = 0;
+      final byDate = <String, double>{};
       for (final d in snap.docs) {
-        total += (d.data()['amount'] as num?)?.toDouble() ?? 0;
+        final amt = (d.data()['amount'] as num?)?.toDouble() ?? 0;
+        total += amt;
+        final paidTs = (d.data()['paidAt'] as Timestamp?)?.toDate();
+        if (paidTs != null) {
+          final key = _getDateKey(paidTs);
+          byDate[key] = (byDate[key] ?? 0) + amt;
+        }
       }
-      return total;
+      return (total: total, byDateKey: byDate);
     } catch (e) {
-      debugPrint('⚠️ _sumTournamentPayments failed: $e');
-      return 0;
+      debugPrint('⚠️ _tournamentPaymentsByDay failed: $e');
+      return (total: 0.0, byDateKey: const <String, double>{});
     }
   }
 
@@ -104,10 +122,14 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
       case TimePeriod.week:
         return (start: _currentWeekStart(now), end: endOfToday);
       case TimePeriod.month:
+        // Current calendar month: 1st of this month → today.
         return (
-          start: endOfToday.subtract(const Duration(days: 30)),
+          start: DateTime(now.year, now.month, 1),
           end: endOfToday
         );
+      case TimePeriod.overall:
+        // All-time: from the earliest plausible booking date → today.
+        return (start: DateTime(2020, 1, 1), end: endOfToday);
     }
   }
 
@@ -123,8 +145,7 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
       case TimePeriod.today:
         return [_getDateKey(today)];
       case TimePeriod.week:
-        // Anchored week: from this Sunday (inclusive) up to today.
-        // Resets to a single day when the new week starts (Sunday).
+        // Anchored Sun→Sat week, up to today.
         final weekStart = _currentWeekStart(now);
         final days = today.difference(weekStart).inDays + 1;
         return List.generate(
@@ -132,10 +153,119 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
           (i) => _getDateKey(weekStart.add(Duration(days: i))),
         );
       case TimePeriod.month:
+        // Current calendar month: 1st → today.
+        final monthStart = DateTime(now.year, now.month, 1);
+        final days = today.difference(monthStart).inDays + 1;
         return List.generate(
-          30,
-          (i) => _getDateKey(today.subtract(Duration(days: i))),
+          days,
+          (i) => _getDateKey(monthStart.add(Duration(days: i))),
         );
+      case TimePeriod.overall:
+        // Date keys are derived from actual booking docs at query time.
+        return [];
+    }
+  }
+
+  /// Synthesize virtual booking entries for every active monthly plan
+  /// session that falls within [range]. Revenue is intentionally 0 here —
+  /// it arrives separately via `_planPaymentsByDay`. The synthetic entries
+  /// let `_calculateAnalytics` count plan sessions in booking totals,
+  /// hourly distribution, weekday distribution, and utilization rate.
+  Future<List<Map<String, dynamic>>> _synthesizePlanSessions(
+    String turfId,
+    ({DateTime start, DateTime end}) range,
+  ) async {
+    try {
+      final snap = await _firestore
+          .collection('turfs')
+          .doc(turfId)
+          .collection('monthly_plans')
+          .where('isActive', isEqualTo: true)
+          .get();
+      if (snap.docs.isEmpty) return [];
+
+      final result = <Map<String, dynamic>>[];
+      final now = DateTime.now();
+      final rangeStart =
+          DateTime(range.start.year, range.start.month, range.start.day);
+      final rangeEnd =
+          DateTime(range.end.year, range.end.month, range.end.day);
+
+      for (final doc in snap.docs) {
+        final data = doc.data();
+        final daysOfWeek =
+            (data['daysOfWeek'] as List?)?.cast<int>() ?? const [];
+        if (daysOfWeek.isEmpty) continue;
+
+        // Support both multi-hour (startHours) and legacy single-hour.
+        final rawHours = data['startHours'];
+        final hours = <int>[];
+        if (rawHours is List) {
+          for (final h in rawHours) {
+            if (h is num) hours.add(h.toInt());
+          }
+        } else {
+          final single = (data['startHour'] as num?)?.toInt();
+          if (single != null) hours.add(single);
+        }
+        if (hours.isEmpty) continue;
+
+        final planStartTs = (data['startDate'] as Timestamp?)?.toDate();
+        if (planStartTs == null) continue;
+        final planStart = DateTime(
+            planStartTs.year, planStartTs.month, planStartTs.day);
+
+        // Respect optional endDate — sessions after endDate don't count.
+        final planEndTs = (data['endDate'] as Timestamp?)?.toDate();
+        final planEnd = planEndTs != null
+            ? DateTime(planEndTs.year, planEndTs.month, planEndTs.day + 1)
+            : null;
+
+        // Effective window = intersection of plan lifetime and query range.
+        final effectiveStart =
+            planStart.isAfter(rangeStart) ? planStart : rangeStart;
+        final effectiveEnd = planEnd != null && planEnd.isBefore(rangeEnd)
+            ? planEnd
+            : rangeEnd;
+        if (!effectiveStart.isBefore(effectiveEnd)) continue;
+
+        for (var day = effectiveStart;
+            day.isBefore(effectiveEnd);
+            day = day.add(const Duration(days: 1))) {
+          if (!daysOfWeek.contains(day.weekday)) continue;
+          final dateKey = _getDateKey(day);
+
+          for (final hour in hours) {
+            final start = DateTime(day.year, day.month, day.day, hour);
+            // Only count sessions that have already started — don't inflate
+            // future sessions into current-period totals.
+            if (start.isAfter(now)) continue;
+
+            final end = DateTime(day.year, day.month, day.day, hour + 1);
+            result.add({
+              'dateKey': dateKey,
+              'startTime': Timestamp.fromDate(start),
+              'endTime': Timestamp.fromDate(end),
+              'status': 'COMPLETED',
+              'isPaid': true,
+              // Revenue is 0 here — it flows through _planPaymentsByDay so
+              // it is never double-counted.
+              'amountPaid': 0.0,
+              'basePrice': 0.0,
+              'isMonthlyPlan': true,
+              'userPhone': data['userPhone'] as String? ?? '',
+              'turfId': turfId,
+            });
+          }
+        }
+      }
+
+      debugPrint(
+          '📊 _synthesizePlanSessions: ${result.length} plan sessions in range');
+      return result;
+    } catch (e) {
+      debugPrint('⚠️ _synthesizePlanSessions failed: $e');
+      return [];
     }
   }
 
@@ -144,25 +274,59 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
     try {
       debugPrint('📊 getAnalytics: turf=$turfId period=$period');
 
-      final dateKeys = _getDateKeysForPeriod(period);
-      final bookings = await _fetchBookingsForDateKeys(turfId, dateKeys);
+      final range = _rangeForPeriod(period);
+
+      // For 'overall', use a timestamp-range query (no dateKey whereIn)
+      // since enumerating thousands of day keys is impractical.
+      final bookingsFuture = period == TimePeriod.overall
+          ? _bookingsInRange(turfId, range.start, range.end)
+          : _fetchBookingsForDateKeys(turfId, _getDateKeysForPeriod(period));
+
+      // Synthesize plan sessions in parallel with the bookings fetch.
+      final planSessionsFuture = _synthesizePlanSessions(turfId, range);
+
+      final rawBookings = await bookingsFuture;
+      final planSessions = await planSessionsFuture;
+
+      // Merge — plan sessions count toward booking totals, hourly/weekday
+      // distribution, and utilization but NOT toward revenue (amountPaid=0).
+      final bookings = [...rawBookings, ...planSessions];
+
+      // Derive date keys. For 'overall', collect from both real bookings
+      // and synthesized plan sessions so the daily chart includes plan days.
+      final dateKeys = period == TimePeriod.overall
+          ? bookings
+              .map((b) => b['dateKey'] as String?)
+              .whereType<String>()
+              .toSet()
+              .toList()
+          : _getDateKeysForPeriod(period);
 
       // Plan + tournament payments received in this period also count.
-      final range = _rangeForPeriod(period);
-      final planRevenue =
-          await _sumPlanPayments(turfId, range.start, range.end);
-      final tournamentRevenue =
-          await _sumTournamentPayments(turfId, range.start, range.end);
+      final plan = await _planPaymentsByDay(turfId, range.start, range.end);
+      final tournament =
+          await _tournamentPaymentsByDay(turfId, range.start, range.end);
       // Concession sales — tracked separately, NOT added to booking total.
       final concession =
           await _sumConcessionSales(turfId, range.start, range.end);
 
       debugPrint(
-          '📊 getAnalytics: ${bookings.length} bookings, plan=$planRevenue, tournament=$tournamentRevenue, concession=${concession.total} (${concession.count} sales)');
+          '📊 getAnalytics: ${rawBookings.length} bookings + ${planSessions.length} plan sessions, '
+          'plan=${plan.total}, tournament=${tournament.total}, concession=${concession.total} (${concession.count} sales)');
+
+      // Merge plan + tournament per-day buckets.
+      final extraByDay = <String, double>{};
+      plan.byDateKey.forEach((k, v) {
+        extraByDay[k] = (extraByDay[k] ?? 0) + v;
+      });
+      tournament.byDateKey.forEach((k, v) {
+        extraByDay[k] = (extraByDay[k] ?? 0) + v;
+      });
 
       return _calculateAnalytics(
           bookings, period, dateKeys,
-          planRevenue: planRevenue + tournamentRevenue,
+          planRevenue: plan.total + tournament.total,
+          planRevenueByDay: extraByDay,
           concessionRevenue: concession.total,
           concessionSalesCount: concession.count);
     } catch (e) {
@@ -234,18 +398,37 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
 
         bookingsByMonth[month] = (bookingsByMonth[month] ?? 0) + 1;
 
-        // Revenue: only paid & finished.
+        // Same rule as the dashboard PAID pill and the Today/Week/Month
+        // analytics card: paid + finished + NOT plan/tournament; amount
+        // = amountPaid, falling back to basePrice when amountPaid is
+        // unset. Without the fallback, legacy paid rows where
+        // amountPaid was never written get silently dropped here while
+        // counting elsewhere — diverging totals by exactly that amount.
         final isPaid = b['isPaid'] as bool? ?? false;
-        final amountPaid = (b['amountPaid'] as num?)?.toDouble() ?? 0;
-        if (!isPaid || amountPaid <= 0) continue;
+        if (!isPaid) continue;
+        final isPlan = b['isMonthlyPlan'] as bool? ?? false;
+        final isTournament = b['isTournament'] as bool? ?? false;
+        if (isPlan || isTournament) continue;
+        final amountPaid = (b['amountPaid'] as num?)?.toDouble();
+        final basePrice = (b['basePrice'] as num?)?.toDouble();
+        final collected = amountPaid ?? basePrice ?? 0;
+        if (collected <= 0) continue;
         final endTime = (b['endTime'] as Timestamp?)?.toDate();
         final finished = status == 'COMPLETED' ||
             (endTime != null && endTime.isBefore(nowTs));
         if (!finished) continue;
-        revenueByMonth[month] = (revenueByMonth[month] ?? 0) + amountPaid;
+        // Same hour-range gate as monthly + hourly so totals stay aligned.
+        final startTs = (b['startTime'] as Timestamp?)?.toDate();
+        final h = startTs?.hour;
+        if (h == null ||
+            h < AppConstants.slotStartHour ||
+            h >= AppConstants.slotEndHour) continue;
+        revenueByMonth[month] = (revenueByMonth[month] ?? 0) + collected;
       }
 
-      // Fold plan + tournament payment revenue into the same buckets.
+      // Fold plan + tournament payments into the per-month totals so
+      // yearly matches the monthly analytics card (which also includes
+      // these lump-sum payments since the recent revenue unification).
       planByMonth.forEach((m, amt) {
         revenueByMonth[m] = (revenueByMonth[m] ?? 0) + amt;
       });
@@ -356,12 +539,12 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
     try {
       final results = await Future.wait([
         _bookingsInRange(turfId, start, end),
-        _sumPlanPayments(turfId, start, end),
-        _sumTournamentPayments(turfId, start, end),
+        _planPaymentsByDay(turfId, start, end),
+        _tournamentPaymentsByDay(turfId, start, end),
       ]);
       final bookings = results[0] as List<Map<String, dynamic>>;
-      final planTotal = results[1] as double;
-      final tournamentTotal = results[2] as double;
+      final planTotal = (results[1] as ({double total, Map<String, double> byDateKey})).total;
+      final tournamentTotal = (results[2] as ({double total, Map<String, double> byDateKey})).total;
       final nowTs = DateTime.now();
       double bookingTotal = 0;
       for (final b in bookings) {
@@ -387,10 +570,17 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
     TimePeriod period,
     List<String> dateKeys, {
     double planRevenue = 0,
+    /// Per-day breakdown of plan + tournament payments so the daily
+    /// chart and breakdown list sum back to the period's total revenue.
+    Map<String, double> planRevenueByDay = const {},
     double concessionRevenue = 0,
     int concessionSalesCount = 0,
   }) {
-    // Revenue metrics — start with monthly plan payments folded in.
+    // Revenue metrics — booking revenue + plan/tournament payments
+    // (which arrive as lump sums on the day admin marks them paid).
+    // The dashboard PAID pill now also includes today's plan revenue, so
+    // analytics matches it as long as the period being viewed is "today".
+    // Cafe stays separate (its own card).
     double totalRevenue = planRevenue;
     double paidRevenue = planRevenue;
     double pendingRevenue = 0;
@@ -420,14 +610,34 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
       dailyBookingsMap[dateKey] = 0;
     }
 
+    // Seed daily revenue with plan + tournament payments paid on each
+    // date — bookings then add on top. Without this seed, lump-sum
+    // payments would inflate the period total but be invisible in the
+    // per-day breakdown.
+    planRevenueByDay.forEach((dateKey, amount) {
+      dailyRevenueMap[dateKey] =
+          (dailyRevenueMap[dateKey] ?? 0) + amount;
+    });
+
     // Process each booking
     final nowTs = DateTime.now();
     for (final booking in bookings) {
       final status = booking['status'] as String?;
+      // Cancelled bookings never contribute to revenue or daily bars —
+      // even if they were marked paid before cancellation. This matches
+      // the hourly breakdown + yearly view exactly. Status counts (and
+      // the cancellationRate metric below) are still computed.
+      final isCancelled = status == 'CANCELLED';
       final isPaid = booking['isPaid'] as bool? ?? false;
-      final amountPaid = (booking['amountPaid'] as num?)?.toDouble() ?? 0;
+      final amountPaidRaw = (booking['amountPaid'] as num?)?.toDouble();
+      final basePrice = (booking['basePrice'] as num?)?.toDouble();
       final userPhone = booking['userPhone'] as String?;
       final dateKey = booking['dateKey'] as String?;
+
+      // Skip plan/tournament synthetic-doc revenue — those flow through
+      // their own payment collections and would double-count here.
+      final isPlan = booking['isMonthlyPlan'] as bool? ?? false;
+      final isTournament = booking['isTournament'] as bool? ?? false;
 
       // Parse startTime to get hour
       final startTimeData = booking['startTime'];
@@ -445,11 +655,26 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
       final matchFinished = status == 'COMPLETED' ||
           (endTime != null && endTime.isBefore(nowTs));
 
-      // Revenue counts only when match is finished AND paid — advance
-      // payments for future games are deferred until the game plays.
-      if (isPaid && amountPaid > 0 && matchFinished) {
-        paidRevenue += amountPaid;
-        totalRevenue += amountPaid;
+      // Revenue: same rule as the dashboard's PAID pill —
+      //   paid && match finished, amountPaid (fall back to basePrice).
+      // Plans/tournaments excluded so they aren't double-counted.
+      final collected = amountPaidRaw ?? basePrice ?? 0;
+      // Same hour-range gate the hourly breakdown applies — a paid
+      // booking whose startTime hour falls OUTSIDE the configured slot
+      // window (e.g. a stale 10 PM doc from before slotEndHour was
+      // raised) should not inflate the day's totals.
+      final hourInRange = hour != null &&
+          hour >= AppConstants.slotStartHour &&
+          hour < AppConstants.slotEndHour;
+      if (!isCancelled &&
+          isPaid &&
+          matchFinished &&
+          !isPlan &&
+          !isTournament &&
+          collected > 0 &&
+          hourInRange) {
+        paidRevenue += collected;
+        totalRevenue += collected;
       }
 
       // Booking status counts
@@ -493,11 +718,18 @@ class AnalyticsRemoteDataSourceImpl implements AnalyticsRemoteDataSource {
         bookingsByWeekday[weekday] = (bookingsByWeekday[weekday] ?? 0) + 1;
       }
 
-      // Daily metrics
+      // Daily metrics — same rule as headline revenue (incl. hour gate
+      // and cancelled exclusion).
       if (dateKey != null) {
-        if (isPaid && amountPaid > 0 && matchFinished) {
+        if (!isCancelled &&
+            isPaid &&
+            matchFinished &&
+            !isPlan &&
+            !isTournament &&
+            collected > 0 &&
+            hourInRange) {
           dailyRevenueMap[dateKey] =
-              (dailyRevenueMap[dateKey] ?? 0) + amountPaid;
+              (dailyRevenueMap[dateKey] ?? 0) + collected;
         }
         if (status != 'CANCELLED') {
           dailyBookingsMap[dateKey] = (dailyBookingsMap[dateKey] ?? 0) + 1;

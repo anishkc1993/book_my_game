@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../../../../core/theme/app_theme.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
+import '../../../booking/presentation/providers/booking_provider.dart';
 import '../../domain/entities/leaderboard_entry.dart';
 import '../providers/leaderboard_provider.dart';
 
@@ -22,8 +23,16 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<LeaderboardProvider>().fetchLeaderboard();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // Mirror the analytics page pattern: sweep past bookings first so
+      // any CONFIRMED-but-already-ended games get marked COMPLETED, then
+      // force-refresh the leaderboard so it picks up those just-completed
+      // games + any new cycle starts from claimed free games.
+      try {
+        await context.read<BookingProvider>().sweepPastBookings();
+      } catch (_) {/* non-fatal */}
+      if (!mounted) return;
+      context.read<LeaderboardProvider>().fetchLeaderboard(forceRefresh: true);
     });
   }
 
@@ -40,6 +49,37 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
       final name = (e.customerName ?? '').toLowerCase();
       return e.phoneNumber.contains(q) || name.contains(q);
     }).toList();
+  }
+
+  Future<void> _editName(LeaderboardEntry entry) async {
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (ctx) => _EditNameDialog(entry: entry),
+    );
+    if (newName == null || !mounted) return;
+    final provider = context.read<LeaderboardProvider>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await provider.setNameOverride(
+        phone: entry.phoneNumber,
+        name: newName,
+      );
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Name updated'),
+          backgroundColor: AppColors.brandGreen,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Failed: $e'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    }
   }
 
   Future<void> _mergePhones(LeaderboardEntry entry) async {
@@ -169,11 +209,9 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                                       ),
                                     ),
                                     const SizedBox(width: 7),
-                                    Text(
-                                      provider.monthRangeDisplay.isNotEmpty
-                                          ? provider.monthRangeDisplay.toUpperCase()
-                                          : 'THIS MONTH',
-                                      style: const TextStyle(
+                                    const Text(
+                                      'ALL TIME',
+                                      style: TextStyle(
                                         color: Colors.white70,
                                         fontSize: 10,
                                         fontWeight: FontWeight.w700,
@@ -305,7 +343,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                           ),
                           const SizedBox(height: 16),
                           Text(
-                            'No bookings yet this month',
+                            'No games played yet',
                             style: theme.textTheme.titleMedium?.copyWith(
                                 color: cs.onSurfaceVariant),
                           ),
@@ -348,6 +386,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                               isTopThree: entry.rank <= 3,
                               canEdit: isAdmin,
                               onEdit: isAdmin ? () => _mergePhones(entry) : null,
+                              onEditName: isAdmin ? () => _editName(entry) : null,
                             );
                           },
                           childCount: filtered.length,
@@ -375,6 +414,7 @@ class _LeaderboardTile extends StatelessWidget {
   final bool isTopThree;
   final bool canEdit;
   final VoidCallback? onEdit;
+  final VoidCallback? onEditName;
 
   const _LeaderboardTile({
     required this.rank,
@@ -385,6 +425,7 @@ class _LeaderboardTile extends StatelessWidget {
     required this.isTopThree,
     this.canEdit = false,
     this.onEdit,
+    this.onEditName,
   });
 
   @override
@@ -485,14 +526,22 @@ class _LeaderboardTile extends StatelessWidget {
             ),
           ),
           if (canEdit) ...[
-            const SizedBox(width: 6),
+            const SizedBox(width: 4),
+            IconButton(
+              onPressed: onEditName,
+              tooltip: 'Edit name',
+              splashRadius: 20,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              icon: Icon(Icons.edit_rounded,
+                  size: 18, color: cs.onSurfaceVariant),
+            ),
             IconButton(
               onPressed: onEdit,
               tooltip: 'Merge phones',
               splashRadius: 20,
               padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(
-                  minWidth: 32, minHeight: 32),
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
               icon: Icon(Icons.merge_type_rounded,
                   size: 20, color: cs.onSurfaceVariant),
             ),
@@ -719,5 +768,78 @@ class _MergePhoneDialogState extends State<_MergePhoneDialog> {
         ),
       ],
     );
+  }
+}
+
+class _EditNameDialog extends StatefulWidget {
+  final LeaderboardEntry entry;
+  const _EditNameDialog({required this.entry});
+
+  @override
+  State<_EditNameDialog> createState() => _EditNameDialogState();
+}
+
+class _EditNameDialogState extends State<_EditNameDialog> {
+  late final TextEditingController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.entry.customerName ?? '');
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return AlertDialog(
+      title: const Text('Edit display name'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            widget.entry.phoneNumber,
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: cs.onSurfaceVariant),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _ctrl,
+            autofocus: true,
+            textCapitalization: TextCapitalization.words,
+            decoration: const InputDecoration(
+              labelText: 'Display name',
+              border: OutlineInputBorder(),
+            ),
+            onSubmitted: (_) => _submit(),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: AppColors.brandGreen),
+          onPressed: _submit,
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+
+  void _submit() {
+    final name = _ctrl.text.trim();
+    if (name.isEmpty) return;
+    Navigator.of(context).pop(name);
   }
 }

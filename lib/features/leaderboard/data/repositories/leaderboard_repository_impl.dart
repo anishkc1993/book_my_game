@@ -34,4 +34,17 @@ class LeaderboardRepositoryImpl implements LeaderboardRepository {
       targetPhone: targetPhone,
     );
   }
+
+  @override
+  Future<void> setNameOverride({
+    required String turfId,
+    required String phone,
+    required String name,
+  }) {
+    return _remoteDataSource.setNameOverride(
+      turfId: turfId,
+      phone: phone,
+      name: name,
+    );
+  }
 }

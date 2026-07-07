@@ -11,6 +11,7 @@ class MonthlyPlanModel extends MonthlyPlanEntity {
     required super.startHours,
     required super.monthlyFee,
     required super.startDate,
+    super.endDate,
     super.isActive = true,
     super.notes,
     super.lastPaidMonth,
@@ -41,6 +42,7 @@ class MonthlyPlanModel extends MonthlyPlanEntity {
       startHours: hours,
       monthlyFee: (data['monthlyFee'] as num?)?.toDouble() ?? 0,
       startDate: (data['startDate'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      endDate: (data['endDate'] as Timestamp?)?.toDate(),
       isActive: data['isActive'] as bool? ?? true,
       notes: data['notes'] as String?,
       lastPaidMonth: data['lastPaidMonth'] as String?,
@@ -59,6 +61,7 @@ class MonthlyPlanModel extends MonthlyPlanEntity {
       startHours: e.startHours,
       monthlyFee: e.monthlyFee,
       startDate: e.startDate,
+      endDate: e.endDate,
       isActive: e.isActive,
       notes: e.notes,
       lastPaidMonth: e.lastPaidMonth,
@@ -81,6 +84,10 @@ class MonthlyPlanModel extends MonthlyPlanEntity {
       'monthlyFee': monthlyFee,
       'startDate': Timestamp.fromDate(
           DateTime(startDate.year, startDate.month, startDate.day)),
+      'endDate': endDate != null
+          ? Timestamp.fromDate(
+              DateTime(endDate!.year, endDate!.month, endDate!.day))
+          : null,
       'isActive': isActive,
       'notes': notes,
       'lastPaidMonth': lastPaidMonth,

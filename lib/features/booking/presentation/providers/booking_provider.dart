@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../../core/constants/app_constants.dart';
 import '../../domain/entities/booking_entity.dart';
 import '../../domain/entities/regular_booking_entity.dart';
 import '../../domain/entities/reward_entity.dart';
@@ -69,6 +70,30 @@ class BookingProvider extends ChangeNotifier {
   // Admin home: today's bookings — independent of any selected date.
   List<BookingEntity> _todayBookings = [];
   List<BookingEntity> get todayBookings => _todayBookings;
+
+  /// Single source of truth for "today's collected revenue". Both the
+  /// dashboard PAID pill AND the analytics "Total Revenue" card for the
+  /// Today period read from this — no parallel calc paths to diverge.
+  /// Rule: paid + game played (completed or end time past), excluding
+  /// plans/tournaments (their money flows through their own payment rows).
+  /// Amount = amountPaid, with basePrice fallback when amountPaid is null.
+  double get todayPaidRevenue {
+    final now = DateTime.now();
+    return _todayBookings
+        .where((b) =>
+            !b.isMonthlyPlan &&
+            !b.isTournament &&
+            !b.isCancelled &&
+            b.isPaid &&
+            (b.isCompleted || b.endTime.isBefore(now)) &&
+            // Same hour gate analytics + hourly breakdown use, so a
+            // stale doc with an out-of-range startTime can't inflate
+            // dashboard PAID without also inflating the breakdowns.
+            b.startTime.hour >= AppConstants.slotStartHour &&
+            b.startTime.hour < AppConstants.slotEndHour)
+        .fold<double>(
+            0, (s, b) => s + (b.amountPaid ?? b.basePrice ?? 0));
+  }
 
   String? _errorMessage;
   String? get errorMessage => _errorMessage;
@@ -292,9 +317,13 @@ class BookingProvider extends ChangeNotifier {
       _lastBooking = await _repository.createAdminBooking(scoped);
       _state = BookingState.success;
 
-      await fetchBookingsForSelectedDate();
-      await fetchSlotsForSelectedDate();
-      await fetchTodayBookings();
+      // Refresh all views in parallel — each writes independent state
+      // (_dateBookings, _slots, _todayBookings) so there's no conflict.
+      await Future.wait([
+        fetchBookingsForSelectedDate(),
+        fetchSlotsForSelectedDate(),
+        fetchTodayBookings(),
+      ]);
 
       notifyListeners();
       _bumpMutation();
@@ -333,8 +362,43 @@ class BookingProvider extends ChangeNotifier {
   Future<bool> markAsPaid(String bookingId, double amount) async {
     try {
       await _repository.markBookingAsPaid(bookingId, amount);
-      await fetchBookingsForSelectedDate();
-      await fetchTodayBookings();
+      await Future.wait([fetchBookingsForSelectedDate(), fetchTodayBookings()]);
+      _bumpMutation();
+      return true;
+    } catch (e) {
+      _errorMessage = e.toString();
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Cached past-customer suggestions for the Edit-details / New-booking
+  /// dialogs. Cache key only stores SUCCESSFUL results — a failed fetch
+  /// is rethrown so the UI can show a real error and the next call
+  /// retries instead of silently re-returning [].
+  List<({String name, String phone})>? _recentCustomers;
+  Future<List<({String name, String phone})>> recentCustomers(
+      {bool forceRefresh = false}) async {
+    if (!forceRefresh && _recentCustomers != null) return _recentCustomers!;
+    if (!_hasTurf) return const [];
+    final list = await _repository.listRecentCustomers(_turfId!);
+    _recentCustomers = list;
+    return list;
+  }
+
+  /// Admin: edit customer name / phone on an existing booking.
+  Future<bool> updateBookingCustomer(
+    String bookingId, {
+    String? customerName,
+    String? userPhone,
+  }) async {
+    try {
+      await _repository.updateBookingCustomer(
+        bookingId,
+        customerName: customerName,
+        userPhone: userPhone,
+      );
+      await Future.wait([fetchBookingsForSelectedDate(), fetchTodayBookings()]);
       _bumpMutation();
       return true;
     } catch (e) {
@@ -348,8 +412,7 @@ class BookingProvider extends ChangeNotifier {
       String bookingId, BookingStatus status) async {
     try {
       await _repository.updateBookingStatus(bookingId, status);
-      await fetchBookingsForSelectedDate();
-      await fetchTodayBookings();
+      await Future.wait([fetchBookingsForSelectedDate(), fetchTodayBookings()]);
       _bumpMutation();
       return true;
     } catch (e) {
@@ -430,6 +493,8 @@ class BookingProvider extends ChangeNotifier {
     required double eveningPrice,
     required double weekendPrice,
     required String adminId,
+    int? dayStartHour,
+    int? eveningStartHour,
   }) async {
     if (!_hasTurf || _slotConfig == null) return false;
 
@@ -444,6 +509,8 @@ class BookingProvider extends ChangeNotifier {
         eveningPrice: eveningPrice,
         weekendPrice: weekendPrice,
         updatedBy: adminId,
+        dayStartHour: dayStartHour,
+        eveningStartHour: eveningStartHour,
       );
 
       _slotConfig = SlotConfigEntity(
@@ -452,6 +519,9 @@ class BookingProvider extends ChangeNotifier {
         dayPrice: dayPrice,
         eveningPrice: eveningPrice,
         weekendPrice: weekendPrice,
+        dayStartHour: dayStartHour ?? _slotConfig!.dayStartHour,
+        eveningStartHour:
+            eveningStartHour ?? _slotConfig!.eveningStartHour,
         updatedAt: DateTime.now(),
         updatedBy: adminId,
         freeGameThreshold: _slotConfig!.freeGameThreshold,
@@ -469,6 +539,30 @@ class BookingProvider extends ChangeNotifier {
 
   double? getPriceForHour(int hour, {DateTime? date}) =>
       _slotConfig?.getPriceForHour(hour, date: date);
+
+  /// What price to DISPLAY for a booking row.
+  ///   - Paid: show `amountPaid` (historical truth — what the customer paid)
+  ///   - Regulars / plans / tournaments: ALWAYS use their stored basePrice.
+  ///     These have negotiated/contracted pricing that should NOT shift
+  ///     when the admin tweaks the public slot rate sheet.
+  ///   - Ordinary walk-in bookings (unpaid): recompute from the CURRENT
+  ///     slot config so band/price changes flow through to pending
+  ///     bookings immediately. Falls back to stored basePrice if the slot
+  ///     config isn't loaded yet.
+  double? displayPriceFor(BookingEntity booking) {
+    if (booking.amountPaid != null) return booking.amountPaid;
+    // Carved-out pricing flows — never touched by slot rate changes.
+    if (booking.isRegular ||
+        booking.isMonthlyPlan ||
+        booking.isTournament) {
+      return booking.basePrice;
+    }
+    final live = _slotConfig?.getPriceForHour(
+      booking.startTime.hour,
+      date: booking.date,
+    );
+    return live ?? booking.basePrice;
+  }
 
   /// Resolve the right price for a regular booking. If any of the selected
   /// weekly days is Sat/Sun, the flat weekend rate applies.
@@ -678,6 +772,92 @@ class BookingProvider extends ChangeNotifier {
   /// Lookup a reward for a specific phone from the cached admin map.
   RewardEntity? rewardFor(String phone) => _rewardsByPhone[phone];
 
+  /// Live progress counts keyed by NORMALIZED phone (no `+977`, digits
+  /// only). Computed from booking docs the same way the leaderboard
+  /// counts games — single source of truth.
+  Map<String, int> _liveCounts = {};
+  Map<String, int> get liveCountsByPhone => _liveCounts;
+
+  /// Same normalization rule the leaderboard + booking datasource use.
+  String _normalizePhone(String raw) {
+    var d = raw.replaceAll(RegExp(r'\D'), '');
+    if (d.startsWith('977') && d.length > 10) d = d.substring(3);
+    return d;
+  }
+
+  /// Current progress for [phone] from the live count map.
+  int liveProgressFor(String phone) =>
+      _liveCounts[_normalizePhone(phone)] ?? 0;
+
+  /// True when [phone] has reached the configured free-game threshold
+  /// AND hasn't been manually excluded by admin.
+  bool isEligibleForFreeGame(String phone) {
+    if (!rewardsEnabled) return false;
+    if (liveProgressFor(phone) < freeGameThreshold) return false;
+    if (isExcludedFromRewards(phone)) return false;
+    return true;
+  }
+
+  /// Whether [phone] is opted out of the rewards program. Matched by
+  /// normalized digits so `+9779…` / `9779…` / 10-digit variants align.
+  bool isExcludedFromRewards(String phone) {
+    final target = _normalizePhone(phone);
+    for (final r in _rewardsByPhone.values) {
+      if (_normalizePhone(r.userPhone) == target) return r.excluded;
+    }
+    return false;
+  }
+
+  /// Toggle the `excluded` flag for a customer. After the write we
+  /// patch the local rewards map + bump the mutation counter so any
+  /// listening screens (leaderboard, etc.) refresh.
+  Future<bool> setRewardExcluded(String phone, bool excluded) async {
+    if (!_hasTurf) return false;
+    try {
+      await _repository.setRewardExcluded(_turfId!, phone, excluded);
+      // Find the existing entry (any phone format) and mutate locally
+      // so the UI updates without a full refetch.
+      final target = _normalizePhone(phone);
+      String? matchedKey;
+      _rewardsByPhone.forEach((k, v) {
+        if (_normalizePhone(v.userPhone) == target) matchedKey = k;
+      });
+      if (matchedKey != null) {
+        final prev = _rewardsByPhone[matchedKey]!;
+        _rewardsByPhone[matchedKey!] = RewardEntity(
+          userPhone: prev.userPhone,
+          progressCount: prev.progressCount,
+          totalClaimed: prev.totalClaimed,
+          lastUpdated: DateTime.now(),
+          lastClaimedAt: prev.lastClaimedAt,
+          excluded: excluded,
+        );
+      } else {
+        _rewardsByPhone[phone] = RewardEntity(
+          userPhone: phone,
+          excluded: excluded,
+        );
+      }
+      _bumpMutation();
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _errorMessage = e.toString().replaceAll('Exception: ', '');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<void> fetchLiveRewardCounts() async {
+    if (!_hasTurf) return;
+    try {
+      _liveCounts = await _repository.liveRewardCounts(_turfId!);
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error computing live reward counts: $e');
+    }
+  }
+
   int get freeGameThreshold => _slotConfig?.freeGameThreshold ?? 0;
   bool get rewardsEnabled => freeGameThreshold > 0;
 
@@ -694,18 +874,25 @@ class BookingProvider extends ChangeNotifier {
   Future<void> fetchAllRewards() async {
     if (!_hasTurf) return;
     try {
-      final list = await _repository.listRewards(_turfId!);
-      _rewardsByPhone = {for (final r in list) r.userPhone: r};
+      final results = await Future.wait([
+        _repository.listRewards(_turfId!),
+        _repository.liveRewardCounts(_turfId!),
+      ]);
+      _rewardsByPhone = {
+        for (final r in results[0] as List<RewardEntity>) r.userPhone: r,
+      };
+      _liveCounts = results[1] as Map<String, int>;
       notifyListeners();
     } catch (e) {
       debugPrint('Error listing rewards: $e');
     }
   }
 
-  Future<bool> claimFreeGame(String phone) async {
+  Future<bool> claimFreeGame(String phone, {String? bookingId}) async {
     if (!_hasTurf) return false;
     try {
-      await _repository.claimFreeGame(_turfId!, phone);
+      await _repository.claimFreeGame(_turfId!, phone,
+          bookingId: bookingId);
       // Refresh local view.
       _rewardsByPhone = {
         ..._rewardsByPhone,
@@ -720,6 +907,23 @@ class BookingProvider extends ChangeNotifier {
       if (_myReward?.userPhone == phone) {
         _myReward = _rewardsByPhone[phone];
       }
+      // Refresh bookings so the new FREE GAME flag/amount renders on
+      // the booking list immediately. Only needed when a specific
+      // booking was stamped — claims from the rewards page (no
+      // bookingId) only touched the reward doc.
+      if (bookingId != null) {
+        await fetchBookingsForSelectedDate();
+        await fetchTodayBookings();
+      }
+      // Recompute live counts so anyone who just claimed shows 0 and
+      // bookings before this customer's lastClaimedAt drop out.
+      try {
+        _liveCounts = await _repository.liveRewardCounts(_turfId!);
+      } catch (_) {/* non-fatal */}
+      // Always bump so the leaderboard (and analytics) auto-refresh.
+      // Without this, claims via the rewards page leave the leaderboard
+      // showing the stale pre-claim count.
+      _bumpMutation();
       notifyListeners();
       return true;
     } catch (e) {

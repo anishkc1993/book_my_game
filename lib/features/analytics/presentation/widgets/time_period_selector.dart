@@ -22,6 +22,7 @@ class TimePeriodSelector extends StatelessWidget {
       (TimePeriod.today, 'Today'),
       (TimePeriod.week, 'Week'),
       (TimePeriod.month, 'Month'),
+      (TimePeriod.overall, 'Overall'),
     ];
 
     return Container(

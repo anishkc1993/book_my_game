@@ -1,7 +1,9 @@
+import '../../domain/entities/concession_expense_entity.dart';
 import '../../domain/entities/concession_item_entity.dart';
 import '../../domain/entities/concession_sale_entity.dart';
 import '../../domain/repositories/concession_repository.dart';
 import '../datasources/concession_remote_datasource.dart';
+import '../models/concession_expense_model.dart';
 import '../models/concession_item_model.dart';
 import '../models/concession_sale_model.dart';
 
@@ -26,6 +28,10 @@ class ConcessionRepositoryImpl implements ConcessionRepository {
   @override
   Future<ConcessionSaleEntity> recordSale(ConcessionSaleEntity sale) =>
       remoteDataSource.recordSale(ConcessionSaleModel.fromEntity(sale));
+
+  @override
+  Future<ConcessionSaleEntity> updateSale(ConcessionSaleEntity sale) =>
+      remoteDataSource.updateSale(ConcessionSaleModel.fromEntity(sale));
 
   @override
   Future<List<ConcessionSaleEntity>> listSales(
@@ -67,4 +73,34 @@ class ConcessionRepositoryImpl implements ConcessionRepository {
     );
     return List<ConcessionSaleEntity>.from(models);
   }
+
+  @override
+  Future<ConcessionExpenseEntity> recordExpense(
+          ConcessionExpenseEntity expense) =>
+      remoteDataSource
+          .recordExpense(ConcessionExpenseModel.fromEntity(expense));
+
+  @override
+  Future<List<ConcessionExpenseEntity>> listExpenses(
+    String turfId, {
+    DateTime? since,
+    int limit = 200,
+  }) async {
+    final models = await remoteDataSource.listExpenses(turfId,
+        since: since, limit: limit);
+    return List<ConcessionExpenseEntity>.from(models);
+  }
+
+  @override
+  Future<void> deleteExpense(String turfId, String expenseId) =>
+      remoteDataSource.deleteExpense(turfId, expenseId);
+
+  @override
+  Future<double> sumExpensesBetween({
+    required String turfId,
+    required DateTime start,
+    required DateTime end,
+  }) =>
+      remoteDataSource.sumExpensesBetween(
+        turfId: turfId, start: start, end: end);
 }

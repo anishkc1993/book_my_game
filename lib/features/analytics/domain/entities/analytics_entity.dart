@@ -1,6 +1,6 @@
 import 'package:equatable/equatable.dart';
 
-enum TimePeriod { today, week, month }
+enum TimePeriod { today, week, month, overall }
 
 class DailyMetric extends Equatable {
   final DateTime date;

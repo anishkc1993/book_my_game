@@ -224,18 +224,18 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
                   delegate: SliverChildBuilderDelegate(
                     (_, index) {
                       final booking = bookingProvider.dateBookings[index];
-                      final reward =
-                          bookingProvider.rewardFor(booking.userPhone);
-                      final eligible = bookingProvider.rewardsEnabled &&
-                          reward != null &&
-                          reward.isEligible(
-                              bookingProvider.freeGameThreshold);
+                      // Live count (matches leaderboard rule) — replaces
+                      // the old `rewardFor(...).progressCount` lookup
+                      // which only counted weekday-daytime games.
+                      final eligible = bookingProvider
+                          .isEligibleForFreeGame(booking.userPhone);
                       return Padding(
                         padding: const EdgeInsets.only(bottom: 12),
                         child: _BookingCard(
                           booking: booking,
                           onMarkPaid: () => _markAsPaid(booking),
                           onCancel: () => _cancelBooking(booking),
+                          onEditDetails: () => _editDetails(booking),
                           freeGameEligible: eligible,
                           onClaimFreeGame: eligible
                               ? () => _claimFreeGame(booking)
@@ -270,6 +270,7 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
 
   Future<void> _markAsPaid(BookingEntity booking) async {
     final bookingProvider = context.read<BookingProvider>();
+    final wasPaid = booking.isPaid;
     final result = await showDialog<double>(
       context: context,
       builder: (_) => _MarkAsPaidDialog(booking: booking),
@@ -277,7 +278,12 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
     if (result == null || !mounted) return;
 
     bool success;
-    if (booking.isRegular && booking.regularBookingId != null) {
+    // For edit-amount on an already-paid booking, just patch the amount.
+    // The materialization branch below is only for the FIRST mark-paid
+    // on a synthetic regular row (which by definition is unpaid).
+    if (wasPaid) {
+      success = await bookingProvider.markAsPaid(booking.id!, result);
+    } else if (booking.isRegular && booking.regularBookingId != null) {
       // Synthetic regular entry — materialize this specific occurrence
       // as a real paid booking. Build a stand-in regular from the
       // synthetic booking's own fields so we don't depend on the regulars
@@ -310,7 +316,9 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(success
-              ? 'Marked as paid · Rs. ${result.toStringAsFixed(0)}'
+              ? (wasPaid
+                  ? 'Amount updated · Rs. ${result.toStringAsFixed(0)}'
+                  : 'Marked as paid · Rs. ${result.toStringAsFixed(0)}')
               : 'Failed: $errMsg'),
           backgroundColor: success ? AppColors.brandGreen : Colors.red,
           behavior: SnackBarBehavior.floating,
@@ -322,6 +330,36 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
         ),
       );
     }
+  }
+
+  /// Admin: edit the customer name + phone on a real booking doc.
+  /// Synthetic rows (regular / plan / tournament) don't have a Firestore
+  /// id and so can't be patched here — guard against that.
+  Future<void> _editDetails(BookingEntity booking) async {
+    if (booking.id == null || booking.id!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('This entry has no editable record yet.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    final bookingProvider = context.read<BookingProvider>();
+    final result = await showDialog<({String name, String phone})>(
+      context: context,
+      builder: (_) => _EditCustomerDialog(booking: booking),
+    );
+    if (result == null || !mounted) return;
+    final ok = await bookingProvider.updateBookingCustomer(
+      booking.id!,
+      customerName: result.name,
+      userPhone: result.phone,
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ok ? 'Customer updated' : 'Failed to update'),
+      backgroundColor: ok ? AppColors.brandGreen : Colors.red,
+      behavior: SnackBarBehavior.floating,
+    ));
   }
 
   Future<void> _claimFreeGame(BookingEntity booking) async {
@@ -353,12 +391,15 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
       ),
     );
     if (confirmed != true || !mounted) return;
-    // Mark the booking paid with amount 0 (free) THEN reset the customer's
-    // reward counter. Two separate writes.
-    if (booking.id != null && !booking.id!.startsWith('regular_')) {
-      await bookingProvider.markAsPaid(booking.id!, 0);
-    }
-    final ok = await bookingProvider.claimFreeGame(booking.userPhone);
+    // Single atomic claim: marks the booking as a free game (amount=0,
+    // isFreeGame=true) AND resets the customer's reward cycle. The
+    // booking row will reflect the new amount + FREE marker on refresh.
+    final canStampBooking =
+        booking.id != null && !booking.id!.startsWith('regular_');
+    final ok = await bookingProvider.claimFreeGame(
+      booking.userPhone,
+      bookingId: canStampBooking ? booking.id : null,
+    );
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content:
@@ -527,6 +568,14 @@ class _NewBookingSheetState extends State<_NewBookingSheet> {
   final _nameController = TextEditingController();
   final _remarksController = TextEditingController();
   Set<int> _selectedHours = {};
+  Future<List<({String name, String phone})>>? _customersFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    // Warm the past-customers cache so the picker opens instantly.
+    _customersFuture = widget.bookingProvider.recentCustomers();
+  }
 
   @override
   void dispose() {
@@ -534,6 +583,48 @@ class _NewBookingSheetState extends State<_NewBookingSheet> {
     _nameController.dispose();
     _remarksController.dispose();
     super.dispose();
+  }
+
+  Future<void> _pickPastCustomer() async {
+    List<({String name, String phone})> suggestions;
+    try {
+      suggestions = await (_customersFuture ??
+          widget.bookingProvider.recentCustomers());
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Could not load past customers: $e'),
+        backgroundColor: Theme.of(context).colorScheme.error,
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    if (!mounted) return;
+    if (suggestions.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No past customers yet'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    final picked = await showModalBottomSheet<({String name, String phone})>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (_) => _PastCustomersSheet(customers: suggestions),
+    );
+    if (picked == null || !mounted) return;
+    // Strip the +977 prefix — the phone field stores plain 10 digits.
+    final stripped = picked.phone.startsWith('+977')
+        ? picked.phone.substring(4)
+        : picked.phone;
+    setState(() {
+      _nameController.text = picked.name;
+      _phoneController.text = stripped;
+    });
   }
 
   double get _totalPrice {
@@ -701,6 +792,20 @@ class _NewBookingSheetState extends State<_NewBookingSheet> {
                 controller: scrollController,
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
                 children: [
+                  // Pick from past customers — fills name + phone in one tap.
+                  OutlinedButton.icon(
+                    onPressed: _pickPastCustomer,
+                    icon: const Icon(Icons.contacts_outlined, size: 18),
+                    label: const Text('Pick from past customers'),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(double.infinity, 44),
+                      foregroundColor: AppColors.brandGreen,
+                      side: BorderSide(
+                          color: AppColors.brandGreen.withValues(alpha: 0.5)),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
                   // Customer name
                   TextField(
                     controller: _nameController,
@@ -1100,6 +1205,7 @@ class _BookingCard extends StatelessWidget {
   final BookingEntity booking;
   final VoidCallback onMarkPaid;
   final VoidCallback onCancel;
+  final VoidCallback onEditDetails;
   final bool freeGameEligible;
   final VoidCallback? onClaimFreeGame;
 
@@ -1107,6 +1213,7 @@ class _BookingCard extends StatelessWidget {
     required this.booking,
     required this.onMarkPaid,
     required this.onCancel,
+    required this.onEditDetails,
     this.freeGameEligible = false,
     this.onClaimFreeGame,
   });
@@ -1115,7 +1222,12 @@ class _BookingCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    final isActive = booking.isPending || booking.isConfirmed;
+    // "Active" for the purposes of rendering the action row — includes
+    // COMPLETED so admins can still hit "Edit amount" on auto-completed
+    // past bookings without re-opening the slot grid.
+    final isActive = booking.isPending ||
+        booking.isConfirmed ||
+        booking.isCompleted;
     final isCancelled = booking.isCancelled;
     final displayName = booking.customerName ?? 'Walk-in';
     final initials = _getInitials(displayName);
@@ -1180,7 +1292,13 @@ class _BookingCard extends StatelessWidget {
                   const SizedBox(width: 6),
                 ],
                 if (!booking.isMonthlyPlan && !booking.isTournament) ...[
-                  if (booking.isPaid)
+                  if (booking.isFreeGame)
+                    const _Chip(
+                      label: 'FREE GAME',
+                      color: AppColors.brandGreen,
+                      icon: Icons.card_giftcard_rounded,
+                    )
+                  else if (booking.isPaid)
                     const _Chip(
                       label: 'PAID',
                       color: Color(0xFF2563EB),
@@ -1246,24 +1364,22 @@ class _BookingCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                if (!booking.isMonthlyPlan && !booking.isTournament) ...[
-                  if (booking.amountPaid != null)
-                    Text(
-                      'Rs. ${booking.amountPaid!.toStringAsFixed(0)}',
+                if (!booking.isMonthlyPlan && !booking.isTournament)
+                  Builder(builder: (ctx) {
+                    // Live-recompute for unpaid bookings so band/price
+                    // changes in slot management flow through. Paid rows
+                    // continue to show the historical amountPaid.
+                    final price =
+                        ctx.watch<BookingProvider>().displayPriceFor(booking);
+                    if (price == null) return const SizedBox.shrink();
+                    return Text(
+                      'Rs. ${price.toInt()}',
                       style: theme.textTheme.titleSmall?.copyWith(
                         color: AppColors.brandGreen,
                         fontWeight: FontWeight.w700,
                       ),
-                    )
-                  else if (booking.basePrice != null)
-                    Text(
-                      'Rs. ${booking.basePrice!.toInt()}',
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        color: AppColors.brandGreen,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                ],
+                    );
+                  }),
               ],
             ),
           ),
@@ -1273,95 +1389,127 @@ class _BookingCard extends StatelessWidget {
               !booking.isTournament) ...[
             Divider(height: 1, color: cs.outlineVariant.withValues(alpha: 0.5)),
 
-            // Row 3: Actions. Regular synthetic entries skip Cancel
-            // (regulars are cancelled from the Regulars page) but keep
-            // Mark paid so admins can record the collection right here.
+            // Row 3: Actions. Uses Wrap so a crowded row (e.g. Claim
+            // free + Edit amount + Cancel + 3-dot on a narrow phone)
+            // flows to a second line instead of overflowing.
             Padding(
               padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
               child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  if (freeGameEligible && onClaimFreeGame != null) ...[
-                    FilledButton.icon(
-                      onPressed: onClaimFreeGame,
-                      icon: const Icon(Icons.card_giftcard_rounded, size: 15),
-                      label: const Text('Claim free'),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: AppColors.brandGreen,
-                        foregroundColor: Colors.white,
-                        minimumSize: const Size(0, 34),
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        textStyle: const TextStyle(
-                            fontSize: 12, fontWeight: FontWeight.w700),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8)),
-                      ),
+                  Expanded(
+                    child: Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        if (freeGameEligible && onClaimFreeGame != null)
+                          // Icon-only to save horizontal space — the
+                          // green gift box is unambiguous and removes
+                          // ~80px from the row.
+                          Tooltip(
+                            message: 'Claim free game',
+                            child: IconButton.filled(
+                              onPressed: onClaimFreeGame,
+                              style: IconButton.styleFrom(
+                                backgroundColor: AppColors.brandGreen,
+                                foregroundColor: Colors.white,
+                                minimumSize: const Size(34, 34),
+                                padding: EdgeInsets.zero,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                              ),
+                              icon: const Icon(
+                                  Icons.card_giftcard_rounded, size: 18),
+                            ),
+                          ),
+                        if (!booking.isPaid)
+                          OutlinedButton.icon(
+                            onPressed: onMarkPaid,
+                            icon: const Icon(Icons.payments_rounded, size: 15),
+                            label: const Text('Mark paid'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.brandGreen,
+                              side: BorderSide(
+                                  color: AppColors.brandGreen
+                                      .withValues(alpha: 0.5)),
+                              minimumSize: const Size(0, 34),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12),
+                              textStyle: const TextStyle(
+                                  fontSize: 12, fontWeight: FontWeight.w600),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8)),
+                            ),
+                          )
+                        else
+                          OutlinedButton.icon(
+                            onPressed: onMarkPaid,
+                            icon: const Icon(Icons.edit_rounded, size: 14),
+                            label: const Text('Edit amount'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.brandGreen,
+                              side: BorderSide(
+                                  color: AppColors.brandGreen
+                                      .withValues(alpha: 0.5)),
+                              minimumSize: const Size(0, 34),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12),
+                              textStyle: const TextStyle(
+                                  fontSize: 12, fontWeight: FontWeight.w600),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8)),
+                            ),
+                          ),
+                        if (!booking.isRegular)
+                          OutlinedButton.icon(
+                            onPressed: onCancel,
+                            icon: const Icon(Icons.close_rounded, size: 15),
+                            label: const Text('Cancel'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: cs.error,
+                              side: BorderSide(
+                                  color: cs.error.withValues(alpha: 0.5)),
+                              minimumSize: const Size(0, 34),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12),
+                              textStyle: const TextStyle(
+                                  fontSize: 12, fontWeight: FontWeight.w600),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8)),
+                            ),
+                          ),
+                      ],
                     ),
-                    const SizedBox(width: 6),
-                  ],
-                  if (!booking.isPaid)
-                    OutlinedButton.icon(
-                      onPressed: onMarkPaid,
-                      icon: const Icon(Icons.payments_rounded, size: 15),
-                      label: const Text('Mark paid'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: AppColors.brandGreen,
-                        side: BorderSide(
-                            color: AppColors.brandGreen.withValues(alpha: 0.5)),
-                        minimumSize: const Size(0, 34),
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 12),
-                        textStyle: const TextStyle(
-                            fontSize: 12, fontWeight: FontWeight.w600),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8)),
-                      ),
-                    )
-                  else
-                    OutlinedButton.icon(
-                      onPressed: null,
-                      icon: const Icon(Icons.check_rounded, size: 15),
-                      label: const Text('Paid'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: cs.onSurfaceVariant,
-                        side: BorderSide(color: cs.outlineVariant),
-                        minimumSize: const Size(0, 34),
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 12),
-                        textStyle: const TextStyle(
-                            fontSize: 12, fontWeight: FontWeight.w600),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8)),
-                      ),
-                    ),
-                  if (!booking.isRegular) ...[
-                    const SizedBox(width: 8),
-                    OutlinedButton.icon(
-                      onPressed: onCancel,
-                      icon: const Icon(Icons.close_rounded, size: 15),
-                      label: const Text('Cancel'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: cs.error,
-                        side: BorderSide(color: cs.error.withValues(alpha: 0.5)),
-                        minimumSize: const Size(0, 34),
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 12),
-                        textStyle: const TextStyle(
-                            fontSize: 12, fontWeight: FontWeight.w600),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8)),
-                      ),
-                    ),
-                  ],
-                  const Spacer(),
-                  IconButton(
-                    onPressed: () {},
-                    icon: Icon(Icons.more_horiz_rounded,
-                        color: cs.onSurfaceVariant),
-                    iconSize: 20,
-                    padding: EdgeInsets.zero,
-                    constraints:
-                        const BoxConstraints(minWidth: 32, minHeight: 32),
                   ),
+                  // Three-dot overflow menu — admin-only secondary
+                  // actions live here so the action row stays uncluttered.
+                  if (!booking.isRegular)
+                    PopupMenuButton<String>(
+                      tooltip: 'More',
+                      icon: Icon(Icons.more_horiz_rounded,
+                          color: cs.onSurfaceVariant),
+                      iconSize: 20,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                          minWidth: 32, minHeight: 32),
+                      onSelected: (value) {
+                        if (value == 'edit_details') onEditDetails();
+                      },
+                      itemBuilder: (_) => const [
+                        PopupMenuItem<String>(
+                          value: 'edit_details',
+                          child: Row(
+                            children: [
+                              Icon(Icons.person_outline_rounded, size: 18),
+                              SizedBox(width: 10),
+                              Text('Edit details'),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                 ],
               ),
             ),
@@ -1384,8 +1532,10 @@ class _BookingCard extends StatelessWidget {
 class _Chip extends StatelessWidget {
   final String label;
   final Color color;
+  /// Optional leading icon shown next to the label.
+  final IconData? icon;
 
-  const _Chip({required this.label, required this.color});
+  const _Chip({required this.label, required this.color, this.icon});
 
   @override
   Widget build(BuildContext context) {
@@ -1395,14 +1545,23 @@ class _Chip extends StatelessWidget {
         color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(6),
       ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: color,
-          fontSize: 10,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.3,
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[
+            Icon(icon, size: 11, color: color),
+            const SizedBox(width: 3),
+          ],
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.3,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1421,12 +1580,25 @@ class _MarkAsPaidDialog extends StatefulWidget {
 class _MarkAsPaidDialogState extends State<_MarkAsPaidDialog> {
   late final TextEditingController _amountController;
 
+  bool get _isEditing => widget.booking.isPaid;
+
   @override
   void initState() {
     super.initState();
-    _amountController = TextEditingController(
-      text: widget.booking.basePrice?.toInt().toString() ?? '',
-    );
+    // Prefill:
+    //   - Editing a paid booking → keep the original amountPaid
+    //   - Else → compute fresh from the CURRENT slot config so prices
+    //     reflect any recent band/price changes (avoids prefilling the
+    //     stale basePrice that was frozen at booking-creation time).
+    String? prefill;
+    if (_isEditing) {
+      prefill = widget.booking.amountPaid?.toInt().toString();
+    } else {
+      final bp = context.read<BookingProvider>();
+      final live = bp.displayPriceFor(widget.booking);
+      prefill = live?.toInt().toString();
+    }
+    _amountController = TextEditingController(text: prefill ?? '');
   }
 
   @override
@@ -1444,11 +1616,16 @@ class _MarkAsPaidDialogState extends State<_MarkAsPaidDialog> {
     final booking = widget.booking;
 
     return AlertDialog(
-      title: const Row(
+      title: Row(
         children: [
-          Icon(Icons.payments_rounded, color: AppColors.brandGreen),
-          SizedBox(width: 8),
-          Text('Mark as Paid'),
+          Icon(
+            _isEditing
+                ? Icons.edit_rounded
+                : Icons.payments_rounded,
+            color: AppColors.brandGreen,
+          ),
+          const SizedBox(width: 8),
+          Text(_isEditing ? 'Edit amount' : 'Mark as Paid'),
         ],
       ),
       content: Column(
@@ -1504,7 +1681,296 @@ class _MarkAsPaidDialogState extends State<_MarkAsPaidDialog> {
               _valid ? () => Navigator.pop(context, _amount) : null,
           style: FilledButton.styleFrom(
               backgroundColor: AppColors.brandGreen),
-          child: const Text('Confirm'),
+          child: Text(_isEditing ? 'Update' : 'Confirm'),
+        ),
+      ],
+    );
+  }
+}
+
+// ─── Past Customers picker sheet ─────────────────────────────────────────────
+
+class _PastCustomersSheet extends StatefulWidget {
+  final List<({String name, String phone})> customers;
+  const _PastCustomersSheet({required this.customers});
+
+  @override
+  State<_PastCustomersSheet> createState() => _PastCustomersSheetState();
+}
+
+class _PastCustomersSheetState extends State<_PastCustomersSheet> {
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final q = _query.toLowerCase();
+    final filtered = q.isEmpty
+        ? widget.customers
+        : widget.customers.where((c) {
+            return c.name.toLowerCase().contains(q) || c.phone.contains(q);
+          }).toList();
+
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: FractionallySizedBox(
+        heightFactor: 0.75,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          child: Column(
+            children: [
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: cs.outlineVariant,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  const Icon(Icons.contacts_outlined,
+                      color: AppColors.brandGreen),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Past customers',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '${widget.customers.length} total',
+                    style: TextStyle(
+                        color: cs.onSurfaceVariant, fontSize: 12),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _searchCtrl,
+                onChanged: (v) => setState(() => _query = v.trim()),
+                decoration: InputDecoration(
+                  hintText: 'Search by name or number',
+                  prefixIcon:
+                      const Icon(Icons.search_rounded, size: 20),
+                  filled: true,
+                  fillColor: cs.surfaceContainerLow,
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: cs.outlineVariant),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Expanded(
+                child: filtered.isEmpty
+                    ? Center(
+                        child: Text(
+                          q.isEmpty
+                              ? 'No past customers yet'
+                              : 'No match for "$_query"',
+                          style: TextStyle(color: cs.onSurfaceVariant),
+                        ),
+                      )
+                    : ListView.separated(
+                        itemCount: filtered.length,
+                        separatorBuilder: (_, __) =>
+                            Divider(color: cs.outlineVariant, height: 1),
+                        itemBuilder: (_, i) {
+                          final c = filtered[i];
+                          return ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor: AppColors.brandGreen
+                                  .withValues(alpha: 0.15),
+                              child: const Icon(Icons.person_rounded,
+                                  color: AppColors.brandGreen, size: 18),
+                            ),
+                            title: Text(
+                              c.name.isEmpty ? '(no name)' : c.name,
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                                color: c.name.isEmpty
+                                    ? cs.onSurfaceVariant
+                                    : cs.onSurface,
+                              ),
+                            ),
+                            subtitle: Text(c.phone),
+                            onTap: () => Navigator.pop(context, c),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Edit Customer Dialog ────────────────────────────────────────────────────
+
+class _EditCustomerDialog extends StatefulWidget {
+  final BookingEntity booking;
+  const _EditCustomerDialog({required this.booking});
+
+  @override
+  State<_EditCustomerDialog> createState() => _EditCustomerDialogState();
+}
+
+class _EditCustomerDialogState extends State<_EditCustomerDialog> {
+  late final TextEditingController _nameCtrl;
+  late final TextEditingController _phoneCtrl;
+  String? _error;
+  Future<List<({String name, String phone})>>? _suggestionsFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameCtrl = TextEditingController(text: widget.booking.customerName ?? '');
+    // Strip the +977 prefix so admin types just the 10-digit local number.
+    final raw = widget.booking.userPhone;
+    final stripped = raw.startsWith('+977') ? raw.substring(4) : raw;
+    _phoneCtrl = TextEditingController(text: stripped);
+    // Kick off the past-customers fetch; cached on the provider so this
+    // is cheap on subsequent opens.
+    _suggestionsFuture = context.read<BookingProvider>().recentCustomers();
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _phoneCtrl.dispose();
+    super.dispose();
+  }
+
+  String _stripPrefix(String raw) =>
+      raw.startsWith('+977') ? raw.substring(4) : raw;
+
+  Future<void> _pickPastCustomer() async {
+    List<({String name, String phone})> suggestions;
+    try {
+      suggestions = await (_suggestionsFuture ??
+          context.read<BookingProvider>().recentCustomers());
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Could not load past customers: $e'),
+        backgroundColor: Theme.of(context).colorScheme.error,
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    if (!mounted) return;
+    if (suggestions.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No past customers yet'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    final picked = await showModalBottomSheet<({String name, String phone})>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (_) => _PastCustomersSheet(customers: suggestions),
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      _nameCtrl.text = picked.name;
+      _phoneCtrl.text = _stripPrefix(picked.phone);
+      _error = null;
+    });
+  }
+
+  void _submit() {
+    final name = _nameCtrl.text.trim();
+    final phoneDigits = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
+    final last10 = phoneDigits.startsWith('977') && phoneDigits.length > 10
+        ? phoneDigits.substring(3)
+        : phoneDigits;
+    if (last10.length != 10) {
+      setState(() => _error = 'Phone must be 10 digits');
+      return;
+    }
+    Navigator.pop(context, (
+      name: name,
+      phone: '+977$last10',
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Row(
+        children: [
+          Icon(Icons.person_outline_rounded, color: AppColors.brandGreen),
+          SizedBox(width: 8),
+          Text('Edit details'),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          OutlinedButton.icon(
+            onPressed: _pickPastCustomer,
+            icon: const Icon(Icons.contacts_outlined, size: 18),
+            label: const Text('Pick from past customers'),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size(double.infinity, 44),
+              foregroundColor: AppColors.brandGreen,
+              side: BorderSide(
+                  color: AppColors.brandGreen.withValues(alpha: 0.5)),
+            ),
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: _nameCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Customer name',
+              prefixIcon: Icon(Icons.badge_outlined),
+            ),
+            textInputAction: TextInputAction.next,
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _phoneCtrl,
+            keyboardType: TextInputType.phone,
+            decoration: InputDecoration(
+              labelText: 'Phone',
+              prefixText: '+977 ',
+              hintText: '98XXXXXXXX',
+              errorText: _error,
+            ),
+            onSubmitted: (_) => _submit(),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+              backgroundColor: AppColors.brandGreen),
+          onPressed: _submit,
+          child: const Text('Save'),
         ),
       ],
     );

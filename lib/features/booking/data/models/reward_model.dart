@@ -9,6 +9,7 @@ class RewardModel extends RewardEntity {
     super.totalClaimed,
     super.lastUpdated,
     super.lastClaimedAt,
+    super.excluded,
   });
 
   factory RewardModel.fromFirestore(DocumentSnapshot doc) {
@@ -19,6 +20,7 @@ class RewardModel extends RewardEntity {
       totalClaimed: (data['totalClaimed'] as num?)?.toInt() ?? 0,
       lastUpdated: (data['lastUpdated'] as Timestamp?)?.toDate(),
       lastClaimedAt: (data['lastClaimedAt'] as Timestamp?)?.toDate(),
+      excluded: data['excluded'] as bool? ?? false,
     );
   }
 

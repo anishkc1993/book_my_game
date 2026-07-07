@@ -11,6 +11,8 @@ import '../widgets/revenue_chart.dart';
 import '../widgets/stat_card.dart';
 import '../widgets/time_period_selector.dart';
 import '../widgets/weekly_insights_card.dart';
+import '../../../booking/presentation/providers/booking_provider.dart';
+import '../../../monthly_plans/presentation/providers/monthly_plan_provider.dart';
 
 class AdminAnalyticsPage extends StatefulWidget {
   const AdminAnalyticsPage({super.key});
@@ -23,14 +25,71 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<AnalyticsProvider>().fetchAnalytics();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // Run the same sweep the dashboard runs so any past-but-still-
+      // unpaid bookings get auto-completed (+ paid regulars materialized)
+      // before analytics aggregates. Without this, analytics for "today"
+      // can lag the dashboard's PAID pill by however long since the
+      // dashboard was last opened.
+      try {
+        await context.read<BookingProvider>().sweepPastBookings();
+      } catch (_) {/* non-fatal */}
+      if (!mounted) return;
+      context.read<AnalyticsProvider>().fetchAnalytics(forceRefresh: true);
     });
   }
 
+  /// Human-readable label for the date range covered by [period].
+  String _periodRangeLabel(TimePeriod period, List<DateTime> dates) {
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+    if (period == TimePeriod.today) return 'TODAY';
+    if (period == TimePeriod.overall) {
+      if (dates.isEmpty) return 'ALL TIME';
+      dates.sort();
+      final first = dates.first;
+      final last = dates.last;
+      if (first.year == last.year) {
+        return '${months[first.month - 1]} – ${months[last.month - 1]} ${first.year} · ALL TIME';
+      }
+      return '${months[first.month - 1]} ${first.year} – ${months[last.month - 1]} ${last.year} · ALL TIME';
+    }
+    if (dates.isEmpty) return period.name.toUpperCase();
+    dates.sort();
+    final first = dates.first;
+    final last = dates.last;
+    if (first.year == last.year && first.month == last.month) {
+      return '${months[first.month - 1]} ${first.year}';
+    }
+    if (first.year == last.year) {
+      return '${months[first.month - 1]} – ${months[last.month - 1]} ${first.year}';
+    }
+    return '${months[first.month - 1]} ${first.year} – ${months[last.month - 1]} ${last.year}';
+  }
+
+  /// Indian-style grouping: 1,23,456 instead of 123,456. Always shows
+  /// the full amount — no "k"/"L" abbreviation, even for larger numbers.
   String _formatCurrency(double amount) {
-    if (amount >= 100000) return 'Rs. ${(amount / 1000).toStringAsFixed(0)}k';
-    return 'Rs. ${amount.toStringAsFixed(0)}';
+    final n = amount.round();
+    final s = n.abs().toString();
+    String grouped;
+    if (s.length <= 3) {
+      grouped = s;
+    } else {
+      final last3 = s.substring(s.length - 3);
+      final rest = s.substring(0, s.length - 3);
+      final buf = StringBuffer();
+      // Group the "rest" by 2 from the right (Indian system).
+      for (int i = 0; i < rest.length; i++) {
+        final fromRight = rest.length - i;
+        buf.write(rest[i]);
+        if (fromRight > 1 && fromRight % 2 == 1) buf.write(',');
+      }
+      grouped = '$buf,$last3';
+    }
+    return 'Rs. ${n < 0 ? '-' : ''}$grouped';
   }
 
   @override
@@ -201,8 +260,74 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
 
     final cs = Theme.of(context).colorScheme;
 
+    // Single source of truth for "today's revenue" — the dashboard's
+    // BookingProvider.todayPaidRevenue + MonthlyPlanProvider.today
+    // PlanRevenue. Used directly when period is Today, and used to patch
+    // the today bucket inside Week/Month so aggregate totals + daily
+    // charts stay consistent across screens.
+    final bp = context.watch<BookingProvider>();
+    final mp = context.watch<MonthlyPlanProvider>();
+    final isToday = analytics.period == TimePeriod.today;
+    final dashToday = bp.todayPaidRevenue + mp.todayPlanRevenue;
+    final now = DateTime.now();
+    bool sameDay(DateTime a, DateTime b) =>
+        a.year == b.year && a.month == b.month && a.day == b.day;
+
+    // Whatever analytics aggregated for *today's* bucket — used to
+    // compute the delta we apply to Week/Month totals.
+    final analyticsToday = analytics.dailyRevenue
+        .where((d) => sameDay(d.date, now))
+        .fold<double>(0, (s, d) => s + d.value);
+    final todayDelta = dashToday - analyticsToday;
+
+    final displayedTotal = isToday
+        ? dashToday
+        : (analytics.totalRevenue + todayDelta);
+    final displayedPaid = isToday
+        ? dashToday
+        : (analytics.paidRevenue + todayDelta);
+
+    // Replace today's bucket in the daily breakdown / chart with the
+    // dashboard value. Historical days are immutable, pass through.
+    final patchedDailyRevenue = analytics.dailyRevenue
+        .map((d) => sameDay(d.date, now)
+            ? DailyMetric(date: d.date, value: dashToday)
+            : d)
+        .toList();
+    // Replace daily slot on the entity going forward.
+    final patchedAnalytics = AnalyticsEntity(
+      totalRevenue: displayedTotal,
+      paidRevenue: displayedPaid,
+      pendingRevenue: analytics.pendingRevenue,
+      averageBookingValue: analytics.averageBookingValue,
+      concessionRevenue: analytics.concessionRevenue,
+      concessionSalesCount: analytics.concessionSalesCount,
+      totalBookings: analytics.totalBookings,
+      confirmedBookings: analytics.confirmedBookings,
+      pendingBookings: analytics.pendingBookings,
+      cancelledBookings: analytics.cancelledBookings,
+      completedBookings: analytics.completedBookings,
+      cancellationRate: analytics.cancellationRate,
+      uniqueCustomers: analytics.uniqueCustomers,
+      newCustomers: analytics.newCustomers,
+      repeatCustomers: analytics.repeatCustomers,
+      bookingsByHour: analytics.bookingsByHour,
+      bookingsByWeekday: analytics.bookingsByWeekday,
+      slotUtilizationRate: analytics.slotUtilizationRate,
+      dailyRevenue: patchedDailyRevenue,
+      dailyBookings: analytics.dailyBookings,
+      period: analytics.period,
+    );
+
+    // Derive the date range covered by this period's data for the label.
+    final allDates = patchedAnalytics.dailyRevenue
+        .where((d) => d.value > 0)
+        .map((d) => d.date)
+        .toList();
+    final periodLabel = _periodRangeLabel(analytics.period, allDates);
+
     return [
-      // Revenue section
+      // ── Overall Collection (full period total — all months combined) ──
       SliverToBoxAdapter(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
@@ -210,21 +335,80 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _sectionHeader(context,
-                  icon: Icons.currency_rupee_rounded,
-                  label: 'Revenue'),
+                  icon: Icons.account_balance_wallet_rounded,
+                  label: 'Overall Collection'),
               const SizedBox(height: 12),
-              StatCard(
-                label: 'Total Revenue',
-                value: _formatCurrency(analytics.totalRevenue),
-                icon: Icons.account_balance_wallet_rounded,
-                iconColor: AppColors.brandGreen,
+              Container(
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      AppColors.brandGreen.withValues(alpha: 0.15),
+                      AppColors.brandGreen.withValues(alpha: 0.05),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                      color: AppColors.brandGreen.withValues(alpha: 0.35)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      periodLabel,
+                      style: const TextStyle(
+                        color: AppColors.brandGreen,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 11,
+                        letterSpacing: 1.0,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      _formatCurrency(displayedTotal),
+                      style: Theme.of(context)
+                          .textTheme
+                          .headlineMedium
+                          ?.copyWith(
+                            fontWeight: FontWeight.w900,
+                            color: AppColors.brandGreen,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${analytics.totalBookings} booking${analytics.totalBookings == 1 ? '' : 's'} · ${analytics.uniqueCustomers} customer${analytics.uniqueCustomers == 1 ? '' : 's'}',
+                      style: TextStyle(
+                        color: AppColors.brandGreen.withValues(alpha: 0.7),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 10),
+            ],
+          ),
+        ),
+      ),
+
+      // ── Field Revenue breakdown ───────────────────────────────────────
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _sectionHeader(context,
+                  icon: Icons.sports_soccer_rounded,
+                  label: 'Field Revenue'),
+              const SizedBox(height: 12),
               Row(
                 children: [
                   MiniStatCard(
-                    label: 'Paid',
-                    value: _formatCurrency(analytics.paidRevenue),
+                    label: 'Collected',
+                    value: _formatCurrency(displayedPaid),
                     valueColor: AppColors.brandGreen,
                   ),
                   const SizedBox(width: 8),
@@ -245,10 +429,10 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
         ),
       ),
 
-      // Cafe revenue (always visible) — NOT added to booking revenue.
+      // Cafe revenue — tappable, goes to concessions detail.
       SliverToBoxAdapter(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
           child: GestureDetector(
             onTap: () => context.push(RoutePaths.concessions),
             child: Container(
@@ -317,7 +501,7 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
       ),
 
       // Revenue chart
-      if (analytics.dailyRevenue.length > 1)
+      if (patchedAnalytics.dailyRevenue.length > 1)
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
@@ -328,8 +512,8 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
                     icon: Icons.bar_chart_rounded, label: 'Revenue Trend'),
                 const SizedBox(height: 12),
                 RevenueChart(
-                  data: analytics.dailyRevenue,
-                  period: analytics.period,
+                  data: patchedAnalytics.dailyRevenue,
+                  period: patchedAnalytics.period,
                 ),
               ],
             ),
@@ -337,9 +521,9 @@ class _AdminAnalyticsPageState extends State<AdminAnalyticsPage> {
         ),
 
       // Daily breakdown — Week / Month only (Today is a single number)
-      if (analytics.period != TimePeriod.today)
+      if (patchedAnalytics.period != TimePeriod.today)
         SliverToBoxAdapter(
-          child: _DailyBreakdown(analytics: analytics),
+          child: _DailyBreakdown(analytics: patchedAnalytics),
         ),
 
       // Bookings section
@@ -617,11 +801,50 @@ class _DailyBreakdown extends StatelessWidget {
       }
     }
 
-    // Show only days with activity, newest first.
+    // Show only days with activity.
     final rows = byDate.values
         .where((d) => d.revenue > 0 || d.bookings > 0)
         .toList()
       ..sort((a, b) => b.date.compareTo(a.date));
+
+    // Group rows by year+month so the section renders as expandable
+    // month headers ("June · Rs 2,08,740") with the day rows tucked
+    // inside. Prevents the list from becoming a 30-row wall when Month
+    // period is selected.
+    final monthGroups = <String, _MonthGroupData>{};
+    for (final row in rows) {
+      final key = '${row.date.year}-${row.date.month}';
+      final group = monthGroups.putIfAbsent(
+        key,
+        () => _MonthGroupData(
+          year: row.date.year,
+          month: row.date.month,
+        ),
+      );
+      group.revenue += row.revenue;
+      group.bookings += row.bookings;
+      group.days.add(row);
+    }
+    final now = DateTime.now();
+    final sortedGroups = monthGroups.values.toList()
+      ..sort((a, b) {
+        if (a.year != b.year) return b.year.compareTo(a.year);
+        return b.month.compareTo(a.month);
+      });
+
+    // Month period → only current calendar month.
+    // Overall / Week → all groups.
+    final isMonthPeriod = analytics.period == TimePeriod.month;
+    final displayGroups = isMonthPeriod
+        ? sortedGroups
+            .where((g) => g.year == now.year && g.month == now.month)
+            .toList()
+        : sortedGroups;
+
+    final sectionTitle = isMonthPeriod ? 'This Month' : 'Monthly Breakdown';
+    final emptyLabel = isMonthPeriod
+        ? 'No activity this month yet.'
+        : 'No activity in this period yet.';
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
@@ -634,14 +857,14 @@ class _DailyBreakdown extends StatelessWidget {
                   size: 18, color: AppColors.brandGreen),
               const SizedBox(width: 8),
               Text(
-                'Daily breakdown',
+                sectionTitle,
                 style: theme.textTheme.titleMedium
                     ?.copyWith(fontWeight: FontWeight.w800),
               ),
             ],
           ),
           const SizedBox(height: 12),
-          if (rows.isEmpty)
+          if (displayGroups.isEmpty)
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(20),
@@ -651,22 +874,177 @@ class _DailyBreakdown extends StatelessWidget {
                 border: Border.all(color: cs.outlineVariant),
               ),
               child: Text(
-                'No activity in this period yet.',
+                emptyLabel,
                 style: theme.textTheme.bodyMedium
                     ?.copyWith(color: cs.onSurfaceVariant),
                 textAlign: TextAlign.center,
               ),
             )
           else
-            for (final row in rows) ...[
-              _DayRow(
-                date: row.date,
-                revenue: row.revenue,
-                bookings: row.bookings,
-                availableSlots: _availableSlotsFor(row.date),
+            for (int i = 0; i < displayGroups.length; i++) ...[
+              _MonthGroup(
+                group: displayGroups[i],
+                initiallyExpanded: i == 0,
+                dayRowBuilder: (day) => _DayRow(
+                  date: day.date,
+                  revenue: day.revenue,
+                  bookings: day.bookings,
+                  availableSlots: _availableSlotsFor(day.date),
+                ),
               ),
-              const SizedBox(height: 8),
+              if (i < displayGroups.length - 1) const SizedBox(height: 8),
             ],
+        ],
+      ),
+    );
+  }
+}
+
+class _MonthGroupData {
+  final int year;
+  final int month; // 1..12
+  double revenue = 0;
+  int bookings = 0;
+  final List<({DateTime date, double revenue, int bookings})> days = [];
+  _MonthGroupData({required this.year, required this.month});
+}
+
+/// Expandable per-month header on the analytics page. Tap to reveal the
+/// day-by-day rows inside the month.
+class _MonthGroup extends StatefulWidget {
+  final _MonthGroupData group;
+  final bool initiallyExpanded;
+  final Widget Function(
+      ({DateTime date, double revenue, int bookings})) dayRowBuilder;
+  const _MonthGroup({
+    required this.group,
+    required this.initiallyExpanded,
+    required this.dayRowBuilder,
+  });
+
+  @override
+  State<_MonthGroup> createState() => _MonthGroupState();
+}
+
+class _MonthGroupState extends State<_MonthGroup> {
+  late bool _expanded = widget.initiallyExpanded;
+
+  static const _monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ];
+
+  String _formatIndian(double amount) {
+    final n = amount.round();
+    final s = n.abs().toString();
+    if (s.length <= 3) return 'Rs. ${n < 0 ? '-' : ''}$s';
+    final last3 = s.substring(s.length - 3);
+    final rest = s.substring(0, s.length - 3);
+    final buf = StringBuffer();
+    for (int i = 0; i < rest.length; i++) {
+      final fromRight = rest.length - i;
+      buf.write(rest[i]);
+      if (fromRight > 1 && fromRight % 2 == 1) buf.write(',');
+    }
+    return 'Rs. ${n < 0 ? '-' : ''}$buf,$last3';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final g = widget.group;
+    final now = DateTime.now();
+    final isCurrent = g.year == now.year && g.month == now.month;
+    return Container(
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            borderRadius: BorderRadius.circular(14),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+              child: Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: AppColors.brandGreen.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    alignment: Alignment.center,
+                    child: const Icon(Icons.calendar_month_rounded,
+                        size: 20, color: AppColors.brandGreen),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isCurrent
+                              ? '${_monthNames[g.month - 1]} ${g.year} · this month'
+                              : '${_monthNames[g.month - 1]} ${g.year}',
+                          style: theme.textTheme.titleSmall
+                              ?.copyWith(fontWeight: FontWeight.w800),
+                        ),
+                        Text(
+                          '${g.days.length} day${g.days.length == 1 ? '' : 's'} · ${g.bookings} booking${g.bookings == 1 ? '' : 's'}',
+                          style: theme.textTheme.bodySmall
+                              ?.copyWith(color: cs.onSurfaceVariant),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        'Month Total',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: cs.onSurfaceVariant,
+                          fontSize: 10,
+                        ),
+                      ),
+                      Text(
+                        _formatIndian(g.revenue),
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          color: AppColors.brandGreen,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Icon(
+                    _expanded
+                        ? Icons.expand_less_rounded
+                        : Icons.expand_more_rounded,
+                    color: cs.onSurfaceVariant,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_expanded) ...[
+            Divider(height: 1, color: cs.outlineVariant),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 10, 10, 12),
+              child: Column(
+                children: [
+                  for (final day in g.days) ...[
+                    widget.dayRowBuilder(day),
+                    const SizedBox(height: 8),
+                  ],
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );

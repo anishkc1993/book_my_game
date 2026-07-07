@@ -48,6 +48,9 @@ class RouteNames {
   static const String hourlyBreakdown = 'hourly-breakdown';
   static const String concessionCollections = 'concession-collections';
   static const String concessionHistory = 'concession-history';
+  static const String concessionExpenses = 'concession-expenses';
+  static const String rewards = 'rewards';
+  static const String publicSchedule = 'public-schedule';
 }
 
 class RoutePaths {
@@ -72,4 +75,9 @@ class RoutePaths {
   static const String hourlyBreakdown = '/admin/analytics/hourly';
   static const String concessionCollections = '/admin/concessions/collections';
   static const String concessionHistory = '/admin/concessions/history';
+  static const String concessionExpenses = '/admin/concessions/expenses';
+  static const String rewards = '/admin/rewards';
+  /// Public — no auth required. `/turf/{turfId}/schedule`. Shareable to
+  /// customers so they can see live slot availability without logging in.
+  static const String publicSchedule = '/turf/:turfId/schedule';
 }

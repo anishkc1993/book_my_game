@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../../core/constants/app_constants.dart';
+import '../../../../core/theme/app_theme.dart';
 
 /// Overflow menu for admin shortcuts that don't fit in the Quick actions
 /// row. Currently hosts Cafe (concessions); future tools land here.
@@ -14,6 +15,13 @@ class MoreActionsPage extends StatelessWidget {
     final cs = theme.colorScheme;
 
     final tiles = <_MoreEntry>[
+      _MoreEntry(
+        icon: Icons.card_giftcard_outlined,
+        label: 'Free games',
+        subtitle: 'Loyalty rewards · claim & reset',
+        route: RoutePaths.rewards,
+        iconColor: AppColors.brandGreen,
+      ),
       _MoreEntry(
         icon: Icons.local_cafe_outlined,
         label: 'Cafe',

@@ -17,8 +17,15 @@ class MonthlyPlanProvider extends ChangeNotifier {
     if (newTurfId == _turfId) return;
     _turfId = newTurfId;
     _plans = [];
+    _todayPlanRevenue = 0;
     _state = MonthlyPlanState.initial;
     notifyListeners();
+    // Auto-fetch today's plan revenue cache as soon as we have a turf,
+    // so the dashboard PAID pill is populated without depending on a
+    // racy postFrameCallback in initState.
+    if (newTurfId != null && newTurfId.isNotEmpty) {
+      fetchTodayPlanRevenue();
+    }
   }
 
   bool get _hasTurf => _turfId != null && _turfId!.isNotEmpty;
@@ -162,6 +169,10 @@ class MonthlyPlanProvider extends ChangeNotifier {
       if (idx >= 0) {
         _plans[idx] = _plans[idx].copyWith(lastPaidMonth: month);
       }
+      // Refresh today's plan-revenue cache so the dashboard PAID pill
+      // reflects the payment immediately (no manual refresh needed).
+      // Fire-and-forget — UI updates as soon as this resolves.
+      fetchTodayPlanRevenue();
       _bumpMutation();
       notifyListeners();
       return true;
@@ -181,5 +192,30 @@ class MonthlyPlanProvider extends ChangeNotifier {
       start: start,
       end: end,
     );
+  }
+
+  /// Cached "today's plan payment total" — admin dashboard reads from
+  /// this so plan payments paid today flow into the PAID pill alongside
+  /// booking revenue.
+  double _todayPlanRevenue = 0;
+  double get todayPlanRevenue => _todayPlanRevenue;
+
+  /// Refresh today's plan payment total. Cheap query (paidAt range for
+  /// the current 24h window). Called from `markPaid` + on init.
+  Future<void> fetchTodayPlanRevenue() async {
+    if (!_hasTurf) return;
+    final now = DateTime.now();
+    final start = DateTime(now.year, now.month, now.day);
+    final end = start.add(const Duration(days: 1));
+    try {
+      _todayPlanRevenue = await _repository.sumPaymentsBetween(
+        turfId: _turfId!,
+        start: start,
+        end: end,
+      );
+      notifyListeners();
+    } catch (e) {
+      debugPrint('⚠️ fetchTodayPlanRevenue failed: $e');
+    }
   }
 }

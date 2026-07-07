@@ -27,6 +27,7 @@ class BookingModel extends BookingEntity {
     super.tournamentId,
     super.tournamentName,
     super.turfId,
+    super.isFreeGame,
   });
 
   factory BookingModel.fromFirestore(DocumentSnapshot doc) {
@@ -48,6 +49,7 @@ class BookingModel extends BookingEntity {
       createdByAdmin: data['createdByAdmin'] as String?,
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
       turfId: data['turfId'] as String?,
+      isFreeGame: data['isFreeGame'] as bool? ?? false,
     );
   }
 
@@ -76,6 +78,7 @@ class BookingModel extends BookingEntity {
       tournamentId: entity.tournamentId,
       tournamentName: entity.tournamentName,
       turfId: entity.turfId,
+      isFreeGame: entity.isFreeGame,
     );
   }
 
@@ -103,6 +106,7 @@ class BookingModel extends BookingEntity {
       // session so the audit trail and dedup checks survive.
       if (isRegular) 'isRegular': true,
       if (regularBookingId != null) 'regularBookingId': regularBookingId,
+      if (isFreeGame) 'isFreeGame': true,
       'createdAt': FieldValue.serverTimestamp(),
     };
   }

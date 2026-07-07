@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../../../../core/constants/app_constants.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../domain/entities/slot_config_entity.dart';
@@ -21,6 +22,9 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
   final _eveningCtrl = TextEditingController();
   final _weekendCtrl = TextEditingController();
   bool _pricingChanged = false;
+  /// Editable band boundaries — initialised from the loaded config.
+  int _dayStartHour = 10;
+  int _eveningStartHour = 17;
 
   @override
   void initState() {
@@ -39,6 +43,10 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
       _dayCtrl.text = config.dayPrice.toInt().toString();
       _eveningCtrl.text = config.eveningPrice.toInt().toString();
       _weekendCtrl.text = config.weekendPrice.toInt().toString();
+      setState(() {
+        _dayStartHour = config.dayStartHour;
+        _eveningStartHour = config.eveningStartHour;
+      });
     }
   }
 
@@ -63,6 +71,16 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
       );
       return;
     }
+    // Sanity-check band boundaries.
+    if (!(AppConstants.slotStartHour < _dayStartHour &&
+        _dayStartHour < _eveningStartHour &&
+        _eveningStartHour < AppConstants.slotEndHour)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Bands must follow: Morning < Day < Evening')),
+      );
+      return;
+    }
 
     final adminId = context.read<AuthProvider>().user?.uid ?? '';
     final success = await context.read<BookingProvider>().updateSlotPricing(
@@ -71,6 +89,8 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
           eveningPrice: evening,
           weekendPrice: weekend,
           adminId: adminId,
+          dayStartHour: _dayStartHour,
+          eveningStartHour: _eveningStartHour,
         );
 
     if (mounted) {
@@ -239,6 +259,22 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
                   ),
                 ),
 
+                // ── Band boundary picker ────────────────────────────────────
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                    child: _BandBoundaryEditor(
+                      dayStart: _dayStartHour,
+                      eveningStart: _eveningStartHour,
+                      onChanged: (dStart, eStart) => setState(() {
+                        _dayStartHour = dStart;
+                        _eveningStartHour = eStart;
+                        _pricingChanged = true;
+                      }),
+                    ),
+                  ),
+                ),
+
                 // ── Price Cards ─────────────────────────────────────────────
                 SliverToBoxAdapter(
                   child: Padding(
@@ -250,7 +286,8 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
                           iconBg: const Color(0xFFFEEFE0),
                           iconColor: const Color(0xFFE07820),
                           title: 'Morning',
-                          timeRange: '6 AM – 10 AM',
+                          timeRange:
+                              '${_fmt(AppConstants.slotStartHour)} – ${_fmt(_dayStartHour)}',
                           controller: _morningCtrl,
                           onChanged: () =>
                               setState(() => _pricingChanged = true),
@@ -261,7 +298,8 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
                           iconBg: const Color(0xFFFFF3E0),
                           iconColor: const Color(0xFFE09810),
                           title: 'Day',
-                          timeRange: '10 AM – 5 PM',
+                          timeRange:
+                              '${_fmt(_dayStartHour)} – ${_fmt(_eveningStartHour)}',
                           controller: _dayCtrl,
                           onChanged: () =>
                               setState(() => _pricingChanged = true),
@@ -272,7 +310,8 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
                           iconBg: const Color(0xFFEEEBF8),
                           iconColor: const Color(0xFF5C5BD6),
                           title: 'Evening',
-                          timeRange: '5 PM – 9 PM',
+                          timeRange:
+                              '${_fmt(_eveningStartHour)} – ${_fmt(AppConstants.slotEndHour)}',
                           controller: _eveningCtrl,
                           onChanged: () =>
                               setState(() => _pricingChanged = true),
@@ -968,6 +1007,158 @@ class _RewardsSectionState extends State<_RewardsSection> {
           ),
         ],
       ),
+    );
+  }
+}
+
+// ─── Band Boundary Editor ────────────────────────────────────────────────────
+
+/// Lets the admin choose where Morning ends / Day begins, and where Day
+/// ends / Evening begins. Hours are constrained to [slotStartHour+1,
+/// slotEndHour-1] with `dayStart < eveningStart`.
+class _BandBoundaryEditor extends StatelessWidget {
+  final int dayStart;
+  final int eveningStart;
+  final void Function(int dayStart, int eveningStart) onChanged;
+  const _BandBoundaryEditor({
+    required this.dayStart,
+    required this.eveningStart,
+    required this.onChanged,
+  });
+
+  String _fmt(int h) {
+    if (h == 0) return '12 AM';
+    if (h < 12) return '$h AM';
+    if (h == 12) return '12 PM';
+    return '${h - 12} PM';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.schedule_rounded,
+                  size: 18, color: cs.onSurfaceVariant),
+              const SizedBox(width: 8),
+              Text(
+                'Time bands',
+                style: theme.textTheme.titleSmall
+                    ?.copyWith(fontWeight: FontWeight.w800),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Where each pricing band starts',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: cs.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: _BoundaryDropdown(
+                  label: 'Day starts',
+                  value: dayStart,
+                  min: AppConstants.slotStartHour + 1,
+                  max: eveningStart - 1,
+                  fmt: _fmt,
+                  onChanged: (h) => onChanged(h, eveningStart),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _BoundaryDropdown(
+                  label: 'Evening starts',
+                  value: eveningStart,
+                  min: dayStart + 1,
+                  max: AppConstants.slotEndHour - 1,
+                  fmt: _fmt,
+                  onChanged: (h) => onChanged(dayStart, h),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BoundaryDropdown extends StatelessWidget {
+  final String label;
+  final int value;
+  final int min;
+  final int max;
+  final String Function(int) fmt;
+  final ValueChanged<int> onChanged;
+  const _BoundaryDropdown({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.fmt,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final items = [for (int h = min; h <= max; h++) h];
+    final shown = items.contains(value)
+        ? value
+        : (items.isEmpty ? min : items.first);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: cs.onSurfaceVariant,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 4),
+        DropdownButtonFormField<int>(
+          value: shown,
+          isDense: true,
+          decoration: InputDecoration(
+            contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12, vertical: 10),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide(color: cs.outlineVariant),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide(color: cs.outlineVariant),
+            ),
+            filled: true,
+            fillColor: cs.surface,
+          ),
+          items: [
+            for (final h in items)
+              DropdownMenuItem(value: h, child: Text(fmt(h))),
+          ],
+          onChanged: (v) {
+            if (v != null) onChanged(v);
+          },
+        ),
+      ],
     );
   }
 }

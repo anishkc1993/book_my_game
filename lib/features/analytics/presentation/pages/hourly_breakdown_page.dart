@@ -69,6 +69,7 @@ class _HourlyBreakdownPageState extends State<HourlyBreakdownPage> {
           h: _HourBucket(hour: h),
       };
 
+      final nowTs = DateTime.now();
       for (final doc in snap.docs) {
         final data = doc.data();
         final status = data['status'] as String?;
@@ -78,12 +79,24 @@ class _HourlyBreakdownPageState extends State<HourlyBreakdownPage> {
         final hour = start.hour;
         final bucket = byHour[hour];
         if (bucket == null) continue;
-        // Collected = amountPaid when set, else basePrice when paid, else 0.
+
         final isPaid = data['isPaid'] as bool? ?? false;
         final amountPaid = (data['amountPaid'] as num?)?.toDouble();
         final basePrice = (data['basePrice'] as num?)?.toDouble();
+
+        // Same rule as the dashboard PAID pill + analytics Total Revenue:
+        // count only when the match has actually played AND it's paid.
+        // Plans/tournaments excluded (they have their own payment streams).
+        final endTime = (data['endTime'] as Timestamp?)?.toDate();
+        final matchFinished = status == 'COMPLETED' ||
+            (endTime != null && endTime.isBefore(nowTs));
+        final isPlan = data['isMonthlyPlan'] as bool? ?? false;
+        final isTournament = data['isTournament'] as bool? ?? false;
+        final paidAmount = amountPaid ?? basePrice ?? 0;
         final collected =
-            amountPaid ?? (isPaid ? (basePrice ?? 0) : 0);
+            (isPaid && matchFinished && !isPlan && !isTournament)
+                ? paidAmount
+                : 0.0;
         final expected = basePrice ?? amountPaid ?? 0;
         bucket.collected += collected;
         bucket.expected += expected;

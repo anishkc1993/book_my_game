@@ -16,4 +16,11 @@ abstract class LeaderboardRepository {
     required List<String> sourcePhones,
     required String targetPhone,
   });
+
+  /// Persist a display-name override for [phone].
+  Future<void> setNameOverride({
+    required String turfId,
+    required String phone,
+    required String name,
+  });
 }

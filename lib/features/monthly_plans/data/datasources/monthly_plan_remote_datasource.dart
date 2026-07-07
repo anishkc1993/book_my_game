@@ -45,17 +45,60 @@ class MonthlyPlanRemoteDataSourceImpl implements MonthlyPlanRemoteDataSource {
   Future<List<MonthlyPlanModel>> list(String turfId) async {
     try {
       final snap = await _plansCol(turfId).get();
-      final list =
+      var plans =
           snap.docs.map((d) => MonthlyPlanModel.fromFirestore(d)).toList();
-      // Stable order regardless of isActive — toggling a plan off should
-      // not reshuffle the list. Earliest scheduled hour first, then name.
-      list.sort((a, b) {
+
+      // Auto-expire plans whose endDate has passed: deactivate them and
+      // clear lastPaidMonth so they show as unpaid (no new month payment
+      // is expected from an expired plan).
+      final today = DateTime.now();
+      final expiredIds = <String>[];
+      plans = plans.map((plan) {
+        if (!plan.isActive) return plan;
+        if (plan.endDate == null) return plan;
+        final end = DateTime(
+            plan.endDate!.year, plan.endDate!.month, plan.endDate!.day);
+        if (!today.isAfter(end)) return plan;
+        expiredIds.add(plan.id!);
+        return MonthlyPlanModel(
+          id: plan.id,
+          customerName: plan.customerName,
+          userPhone: plan.userPhone,
+          daysOfWeek: plan.daysOfWeek,
+          startHours: plan.startHours,
+          monthlyFee: plan.monthlyFee,
+          startDate: plan.startDate,
+          endDate: plan.endDate,
+          isActive: false,
+          lastPaidMonth: null, // reset so it shows unpaid
+          notes: plan.notes,
+          createdByAdmin: plan.createdByAdmin,
+          createdAt: plan.createdAt,
+          turfId: plan.turfId,
+        );
+      }).toList();
+
+      if (expiredIds.isNotEmpty) {
+        final batch = _firestore.batch();
+        for (final id in expiredIds) {
+          batch.update(_plansCol(turfId).doc(id), {
+            'isActive': false,
+            'lastPaidMonth': null,
+          });
+        }
+        await batch.commit();
+        debugPrint(
+            '📅 MonthlyPlan.list: auto-expired ${expiredIds.length} plan(s)');
+      }
+
+      // Stable order regardless of isActive.
+      plans.sort((a, b) {
         if (a.startHour != b.startHour) {
           return a.startHour.compareTo(b.startHour);
         }
         return a.customerName.compareTo(b.customerName);
       });
-      return list;
+      return plans;
     } catch (e) {
       debugPrint('❌ MonthlyPlan.list: $e');
       throw ServerException('Failed to load monthly plans: ${e.toString()}');
@@ -68,30 +111,57 @@ class MonthlyPlanRemoteDataSourceImpl implements MonthlyPlanRemoteDataSource {
       if (plan.turfId == null || plan.turfId!.isEmpty) {
         throw const ServerException('Missing turf for monthly plan');
       }
-      if (plan.id == null) {
-        final ref = await _plansCol(plan.turfId!)
-            .add(plan.toFirestore(includeServerTimestamp: true));
+      // If the endDate is already in the past, mark the plan inactive and
+      // clear payment so it doesn't appear as overdue for a new month.
+      MonthlyPlanModel effective = plan;
+      if (plan.endDate != null) {
+        final today = DateTime.now();
+        final end = DateTime(
+            plan.endDate!.year, plan.endDate!.month, plan.endDate!.day);
+        if (today.isAfter(end)) {
+          effective = MonthlyPlanModel(
+            id: plan.id,
+            customerName: plan.customerName,
+            userPhone: plan.userPhone,
+            daysOfWeek: plan.daysOfWeek,
+            startHours: plan.startHours,
+            monthlyFee: plan.monthlyFee,
+            startDate: plan.startDate,
+            endDate: plan.endDate,
+            isActive: false,
+            lastPaidMonth: null,
+            notes: plan.notes,
+            createdByAdmin: plan.createdByAdmin,
+            createdAt: plan.createdAt,
+            turfId: plan.turfId,
+          );
+        }
+      }
+      if (effective.id == null) {
+        final ref = await _plansCol(effective.turfId!)
+            .add(effective.toFirestore(includeServerTimestamp: true));
         return MonthlyPlanModel(
           id: ref.id,
-          customerName: plan.customerName,
-          userPhone: plan.userPhone,
-          daysOfWeek: plan.daysOfWeek,
-          startHours: plan.startHours,
-          monthlyFee: plan.monthlyFee,
-          startDate: plan.startDate,
-          isActive: plan.isActive,
-          notes: plan.notes,
-          lastPaidMonth: plan.lastPaidMonth,
-          createdByAdmin: plan.createdByAdmin,
+          customerName: effective.customerName,
+          userPhone: effective.userPhone,
+          daysOfWeek: effective.daysOfWeek,
+          startHours: effective.startHours,
+          monthlyFee: effective.monthlyFee,
+          startDate: effective.startDate,
+          endDate: effective.endDate,
+          isActive: effective.isActive,
+          notes: effective.notes,
+          lastPaidMonth: effective.lastPaidMonth,
+          createdByAdmin: effective.createdByAdmin,
           createdAt: DateTime.now(),
-          turfId: plan.turfId,
+          turfId: effective.turfId,
         );
       } else {
-        await _plansCol(plan.turfId!).doc(plan.id).set(
-              plan.toFirestore(),
+        await _plansCol(effective.turfId!).doc(effective.id).set(
+              effective.toFirestore(),
               SetOptions(merge: true),
             );
-        return plan;
+        return effective;
       }
     } catch (e) {
       if (e is ServerException) rethrow;

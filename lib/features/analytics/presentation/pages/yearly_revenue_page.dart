@@ -33,14 +33,23 @@ class _YearlyRevenuePageState extends State<YearlyRevenuePage> {
       for (int y = _selectedYear; y >= _launchYear; y--) y,
     ];
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<AnalyticsProvider>().fetchYearly(_selectedYear);
+      // Always force-refresh on entry. The in-memory cache only
+      // invalidates on a mutation event; without that, opening the page
+      // on a later calendar day shows the snapshot from the previous
+      // session.
+      context
+          .read<AnalyticsProvider>()
+          .fetchYearly(_selectedYear, forceRefresh: true);
     });
   }
 
   void _pickYear(int year) {
     if (year == _selectedYear) return;
     setState(() => _selectedYear = year);
-    context.read<AnalyticsProvider>().fetchYearly(year);
+    // Same reasoning — fresh data for the newly-selected year.
+    context
+        .read<AnalyticsProvider>()
+        .fetchYearly(year, forceRefresh: true);
   }
 
   Future<void> _refresh() async {
@@ -686,25 +695,17 @@ class _MonthRow extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // Left: month name + 2-digit year
+          // Left: month name only. The selected year is already shown
+          // prominently in the page header — repeating it here as a
+          // 2-digit suffix (e.g. "26") read like a date and confused
+          // admins into thinking they were looking at June 26th.
           SizedBox(
             width: 56,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  _monthShort(month.month),
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                Text(
-                  '${year % 100}',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: cs.onSurfaceVariant,
-                  ),
-                ),
-              ],
+            child: Text(
+              _monthShort(month.month),
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w800,
+              ),
             ),
           ),
           const SizedBox(width: 12),

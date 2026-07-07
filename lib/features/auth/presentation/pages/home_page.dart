@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../../../core/constants/app_constants.dart';
@@ -13,6 +14,7 @@ import '../../../booking/domain/entities/slot_config_entity.dart';
 import '../../../booking/presentation/providers/booking_provider.dart';
 import '../../../leaderboard/domain/entities/leaderboard_entry.dart';
 import '../../../leaderboard/presentation/providers/leaderboard_provider.dart';
+import '../../../monthly_plans/presentation/providers/monthly_plan_provider.dart';
 import '../../domain/entities/user_entity.dart';
 import '../providers/auth_provider.dart';
 
@@ -48,6 +50,7 @@ class _HomePageState extends State<HomePage> {
           });
           bp.fetchSlotConfig();
           context.read<LeaderboardProvider>().fetchLeaderboard();
+          context.read<MonthlyPlanProvider>().fetchTodayPlanRevenue();
         }
       }
     });
@@ -162,6 +165,7 @@ class _AdminHomeState extends State<_AdminHome> {
       bp.fetchTodayBookings(),
       bp.fetchSlotConfig(),
       bp.fetchAllRewards(),
+      context.read<MonthlyPlanProvider>().fetchTodayPlanRevenue(),
     ]);
     if (!mounted) return;
     // Belt-and-braces — force a leaderboard refresh in case sweep made
@@ -169,6 +173,33 @@ class _AdminHomeState extends State<_AdminHome> {
     await context
         .read<LeaderboardProvider>()
         .fetchLeaderboard(forceRefresh: true);
+  }
+
+  /// Open a bottom sheet offering two ways to share the customer-facing
+  /// public schedule link: copy/share the URL, or display a QR for
+  /// walk-in customers to scan (posters, table tents, etc.).
+  Future<void> _shareSchedule(BuildContext ctx) async {
+    final user = ctx.read<AuthProvider>().user;
+    final turfId = user?.turfId;
+    if (turfId == null || turfId.isEmpty) {
+      ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(
+        content: Text('No turf linked yet — cannot share.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    final turfName = user?.turfName ?? 'our turf';
+    final url =
+        'https://book-my-game-a9b76.web.app/turf/$turfId/schedule';
+    await showModalBottomSheet<void>(
+      context: ctx,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(ctx).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (_) => _ShareScheduleSheet(turfName: turfName, url: url),
+    );
   }
 
   String _dateLine(DateTime d, int firstHour, int lastHour) {
@@ -199,16 +230,15 @@ class _AdminHomeState extends State<_AdminHome> {
 
             // Revenue split — paid revenue is recognized only after the
             // match has actually played (advance payments are deferred).
-            // Monthly-plan + tournament sessions are excluded; their
-            // revenue flows through their own lump-sum payment rows.
-            final paidRevenue = liveBookings
-                .where((b) =>
-                    !b.isMonthlyPlan &&
-                    !b.isTournament &&
-                    b.isPaid &&
-                    (b.isCompleted || b.endTime.isBefore(today)))
-                .fold<double>(
-                    0, (s, b) => s + (b.amountPaid ?? b.basePrice ?? 0));
+            // Today's PAID = booking revenue + any plan payments admin
+            // marked paid today. Plan revenue is tracked on the
+            // MonthlyPlanProvider via its own lump-sum payment rows.
+            // Shared source of truth — analytics "Today" reads from the
+            // exact same getters so the two screens can never diverge.
+            final bookingRevenue = bp.todayPaidRevenue;
+            final planRevenue =
+                context.watch<MonthlyPlanProvider>().todayPlanRevenue;
+            final paidRevenue = bookingRevenue + planRevenue;
 
 
             // Slot data
@@ -290,6 +320,12 @@ class _AdminHomeState extends State<_AdminHome> {
                           onTap: () =>
                               context.push(RoutePaths.venueLocation),
                           tooltip: 'Venue location',
+                        ),
+                        const SizedBox(width: 8),
+                        _IconButtonCircle(
+                          icon: Icons.share_outlined,
+                          onTap: () => _shareSchedule(context),
+                          tooltip: 'Share schedule',
                         ),
                         const SizedBox(width: 8),
                         _BellBadge(
@@ -3139,6 +3175,260 @@ class _NavItem extends StatelessWidget {
                 fontWeight: active ? FontWeight.w700 : FontWeight.w400,
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Share schedule sheet ────────────────────────────────────────────────────
+
+/// Bottom sheet that surfaces two ways to share the public schedule:
+/// the OS share sheet (WhatsApp / SMS / copy) and a QR code for walk-in
+/// customers to scan from a printed poster.
+class _ShareScheduleSheet extends StatelessWidget {
+  final String turfName;
+  final String url;
+  const _ShareScheduleSheet({required this.turfName, required this.url});
+
+  Future<void> _shareLink(BuildContext ctx) async {
+    final msg =
+        '$turfName · Live availability for the next 7 days. '
+        'Tap a free slot to book on WhatsApp:\n$url';
+    await Share.share(msg, subject: '$turfName · Schedule');
+    if (ctx.mounted) Navigator.pop(ctx);
+  }
+
+  Future<void> _copyLink(BuildContext ctx) async {
+    await Clipboard.setData(ClipboardData(text: url));
+    if (!ctx.mounted) return;
+    Navigator.pop(ctx);
+    ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(
+      content: Text('Link copied'),
+      behavior: SnackBarBehavior.floating,
+    ));
+  }
+
+  void _showQr(BuildContext ctx) {
+    showDialog<void>(
+      context: ctx,
+      builder: (dctx) {
+        final dcs = Theme.of(dctx).colorScheme;
+        return Dialog(
+          backgroundColor: dcs.surface,
+          insetPadding: const EdgeInsets.all(24),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20)),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 22, 20, 18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  turfName,
+                  style: Theme.of(dctx)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w800),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Scan to view live schedule',
+                  style: Theme.of(dctx).textTheme.bodySmall?.copyWith(
+                        color: dcs.onSurfaceVariant,
+                      ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                // White background so the QR scans reliably even when
+                // the app's in dark mode.
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: QrImageView(
+                    data: url,
+                    version: QrVersions.auto,
+                    size: 240,
+                    backgroundColor: Colors.white,
+                    eyeStyle: const QrEyeStyle(
+                      eyeShape: QrEyeShape.square,
+                      color: Colors.black,
+                    ),
+                    dataModuleStyle: const QrDataModuleStyle(
+                      dataModuleShape: QrDataModuleShape.square,
+                      color: Colors.black,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                SelectableText(
+                  url,
+                  style: Theme.of(dctx).textTheme.bodySmall?.copyWith(
+                        color: dcs.onSurfaceVariant,
+                      ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 12),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () => Navigator.pop(dctx),
+                    child: const Text('Close'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Drag handle
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: cs.outlineVariant,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                'Share schedule',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                'Customers can see live availability and book on WhatsApp.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: cs.onSurfaceVariant,
+                    ),
+              ),
+              const SizedBox(height: 14),
+              _ShareTile(
+                icon: Icons.share_outlined,
+                color: AppColors.brandGreen,
+                label: 'Share link',
+                subtitle: 'WhatsApp / SMS / copy via system share',
+                onTap: () => _shareLink(context),
+              ),
+              const SizedBox(height: 8),
+              _ShareTile(
+                icon: Icons.qr_code_2_rounded,
+                color: const Color(0xFF2563EB),
+                label: 'Show QR code',
+                subtitle: 'For posters and walk-in customers',
+                onTap: () {
+                  Navigator.pop(context);
+                  _showQr(context);
+                },
+              ),
+              const SizedBox(height: 8),
+              _ShareTile(
+                icon: Icons.link_rounded,
+                color: cs.onSurfaceVariant,
+                label: 'Copy link',
+                subtitle: url,
+                onTap: () => _copyLink(context),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ShareTile extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final String label;
+  final String subtitle;
+  final VoidCallback onTap;
+  const _ShareTile({
+    required this.icon,
+    required this.color,
+    required this.label,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: cs.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: cs.outlineVariant),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              alignment: Alignment.center,
+              child: Icon(icon, color: color, size: 22),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleSmall
+                        ?.copyWith(fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded,
+                color: cs.onSurfaceVariant.withValues(alpha: 0.6)),
           ],
         ),
       ),

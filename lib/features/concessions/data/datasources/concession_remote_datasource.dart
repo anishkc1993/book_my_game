@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../../../core/errors/exceptions.dart';
+import '../models/concession_expense_model.dart';
 import '../models/concession_item_model.dart';
 import '../models/concession_sale_model.dart';
 
@@ -17,6 +18,7 @@ abstract class ConcessionRemoteDataSource {
     int limit = 100,
   });
   Future<void> deleteSale(String turfId, String saleId);
+  Future<ConcessionSaleModel> updateSale(ConcessionSaleModel sale);
 
   Future<double> sumSalesBetween({
     required String turfId,
@@ -27,6 +29,21 @@ abstract class ConcessionRemoteDataSource {
   /// Raw sales between [start] (inclusive) and [end] (exclusive),
   /// newest first. Used by the history page.
   Future<List<ConcessionSaleModel>> listSalesBetween({
+    required String turfId,
+    required DateTime start,
+    required DateTime end,
+  });
+
+  // ── Expenses ──────────────────────────────────────────────────────────
+  Future<ConcessionExpenseModel> recordExpense(
+      ConcessionExpenseModel expense);
+  Future<List<ConcessionExpenseModel>> listExpenses(
+    String turfId, {
+    DateTime? since,
+    int limit = 200,
+  });
+  Future<void> deleteExpense(String turfId, String expenseId);
+  Future<double> sumExpensesBetween({
     required String turfId,
     required DateTime start,
     required DateTime end,
@@ -50,6 +67,12 @@ class ConcessionRemoteDataSourceImpl implements ConcessionRemoteDataSource {
           .collection('turfs')
           .doc(turfId)
           .collection('concession_sales');
+
+  CollectionReference<Map<String, dynamic>> _expensesCol(String turfId) =>
+      _firestore
+          .collection('turfs')
+          .doc(turfId)
+          .collection('concession_expenses');
 
   // ── Items ────────────────────────────────────────────────────────────────
   @override
@@ -172,6 +195,31 @@ class ConcessionRemoteDataSourceImpl implements ConcessionRemoteDataSource {
   }
 
   @override
+  Future<ConcessionSaleModel> updateSale(ConcessionSaleModel sale) async {
+    try {
+      if (sale.id == null || sale.id!.isEmpty) {
+        throw const ServerException('Missing id for sale update');
+      }
+      if (sale.turfId == null || sale.turfId!.isEmpty) {
+        throw const ServerException('Missing turf for sale update');
+      }
+      // Mutable fields only — keep soldAt/markedBy/turfId immutable so the
+      // history view (which buckets by date) doesn't shift on an edit.
+      await _salesCol(sale.turfId!).doc(sale.id).update({
+        'itemId': sale.itemId,
+        'itemName': sale.itemName,
+        'quantity': sale.quantity,
+        'amount': sale.amount,
+        'notes': sale.notes,
+      });
+      return sale;
+    } catch (e) {
+      if (e is ServerException) rethrow;
+      throw ServerException('Failed to update sale: ${e.toString()}');
+    }
+  }
+
+  @override
   Future<double> sumSalesBetween({
     required String turfId,
     required DateTime start,
@@ -213,6 +261,88 @@ class ConcessionRemoteDataSourceImpl implements ConcessionRemoteDataSource {
     } catch (e) {
       debugPrint('❌ Concession.listSalesBetween: $e');
       throw ServerException('Failed to load sales: ${e.toString()}');
+    }
+  }
+
+  // ── Expenses ──────────────────────────────────────────────────────────
+  @override
+  Future<ConcessionExpenseModel> recordExpense(
+      ConcessionExpenseModel expense) async {
+    try {
+      if (expense.turfId == null || expense.turfId!.isEmpty) {
+        throw const ServerException('Missing turf for expense');
+      }
+      final ref = await _expensesCol(expense.turfId!)
+          .add(expense.toFirestore(includeServerTimestamp: true));
+      return ConcessionExpenseModel(
+        id: ref.id,
+        itemName: expense.itemName,
+        quantity: expense.quantity,
+        amount: expense.amount,
+        spentAt: DateTime.now(),
+        markedBy: expense.markedBy,
+        notes: expense.notes,
+        turfId: expense.turfId,
+      );
+    } catch (e) {
+      if (e is ServerException) rethrow;
+      throw ServerException('Failed to record expense: ${e.toString()}');
+    }
+  }
+
+  @override
+  Future<List<ConcessionExpenseModel>> listExpenses(
+    String turfId, {
+    DateTime? since,
+    int limit = 200,
+  }) async {
+    try {
+      Query<Map<String, dynamic>> q = _expensesCol(turfId)
+          .orderBy('spentAt', descending: true)
+          .limit(limit);
+      if (since != null) {
+        q = q.where('spentAt',
+            isGreaterThanOrEqualTo: Timestamp.fromDate(since));
+      }
+      final snap = await q.get();
+      return snap.docs
+          .map((d) => ConcessionExpenseModel.fromFirestore(d))
+          .toList();
+    } catch (e) {
+      debugPrint('❌ Concession.listExpenses: $e');
+      throw ServerException('Failed to load expenses: ${e.toString()}');
+    }
+  }
+
+  @override
+  Future<void> deleteExpense(String turfId, String expenseId) async {
+    try {
+      await _expensesCol(turfId).doc(expenseId).delete();
+    } catch (e) {
+      throw ServerException('Failed to delete expense: ${e.toString()}');
+    }
+  }
+
+  @override
+  Future<double> sumExpensesBetween({
+    required String turfId,
+    required DateTime start,
+    required DateTime end,
+  }) async {
+    try {
+      final snap = await _expensesCol(turfId)
+          .where('spentAt',
+              isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+          .where('spentAt', isLessThan: Timestamp.fromDate(end))
+          .get();
+      double total = 0;
+      for (final d in snap.docs) {
+        total += (d.data()['amount'] as num?)?.toDouble() ?? 0;
+      }
+      return total;
+    } catch (e) {
+      debugPrint('❌ Concession.sumExpensesBetween: $e');
+      return 0;
     }
   }
 }

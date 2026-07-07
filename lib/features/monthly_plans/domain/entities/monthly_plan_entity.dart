@@ -21,6 +21,7 @@ class MonthlyPlanEntity extends Equatable {
   final List<int> startHours;
   final double monthlyFee;
   final DateTime startDate; // first effective day
+  final DateTime? endDate;  // last effective day (null = no end)
   final bool isActive;
   final String? notes;
   /// Most recent paid month, `YYYY-MM`. Null/empty means never paid.
@@ -37,6 +38,7 @@ class MonthlyPlanEntity extends Equatable {
     required this.startHours,
     required this.monthlyFee,
     required this.startDate,
+    this.endDate,
     this.isActive = true,
     this.notes,
     this.lastPaidMonth,
@@ -54,6 +56,10 @@ class MonthlyPlanEntity extends Equatable {
     final day = DateTime(date.year, date.month, date.day);
     final start = DateTime(startDate.year, startDate.month, startDate.day);
     if (day.isBefore(start)) return false;
+    if (endDate != null) {
+      final end = DateTime(endDate!.year, endDate!.month, endDate!.day);
+      if (day.isAfter(end)) return false;
+    }
     return daysOfWeek.contains(day.weekday);
   }
 
@@ -95,6 +101,7 @@ class MonthlyPlanEntity extends Equatable {
     List<int>? startHours,
     double? monthlyFee,
     DateTime? startDate,
+    Object? endDate = _sentinel,
     bool? isActive,
     String? notes,
     String? lastPaidMonth,
@@ -110,6 +117,7 @@ class MonthlyPlanEntity extends Equatable {
       startHours: startHours ?? this.startHours,
       monthlyFee: monthlyFee ?? this.monthlyFee,
       startDate: startDate ?? this.startDate,
+      endDate: endDate == _sentinel ? this.endDate : endDate as DateTime?,
       isActive: isActive ?? this.isActive,
       notes: notes ?? this.notes,
       lastPaidMonth: lastPaidMonth ?? this.lastPaidMonth,
@@ -118,6 +126,8 @@ class MonthlyPlanEntity extends Equatable {
       turfId: turfId ?? this.turfId,
     );
   }
+
+  static const Object _sentinel = Object();
 
   @override
   List<Object?> get props => [
@@ -128,6 +138,7 @@ class MonthlyPlanEntity extends Equatable {
         startHours,
         monthlyFee,
         startDate,
+        endDate,
         isActive,
         notes,
         lastPaidMonth,

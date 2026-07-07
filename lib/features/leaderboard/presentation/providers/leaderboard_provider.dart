@@ -110,6 +110,21 @@ class LeaderboardProvider extends ChangeNotifier {
     return count;
   }
 
+  /// Admin action: persist a display-name override for [phone] so the
+  /// name survives leaderboard recalculations.
+  Future<void> setNameOverride({
+    required String phone,
+    required String name,
+  }) async {
+    if (!_hasTurf) return;
+    await _repository.setNameOverride(
+      turfId: _turfId!,
+      phone: phone,
+      name: name,
+    );
+    await fetchLeaderboard(forceRefresh: true);
+  }
+
   String get lastUpdateDisplay {
     if (_lastUpdate == null) return 'Never';
     final now = DateTime.now();

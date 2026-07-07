@@ -18,12 +18,53 @@ class ConcessionsPage extends StatefulWidget {
 }
 
 class _ConcessionsPageState extends State<ConcessionsPage> {
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _query = '';
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<ConcessionProvider>().load();
     });
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  /// One-tap record at qty=1, default price. Long-press opens the full
+  /// sheet for custom qty/amount. Undo SnackBar gives admin a way out
+  /// if they fat-finger an item.
+  Future<void> _quickRecord(ConcessionItemEntity item) async {
+    final provider = context.read<ConcessionProvider>();
+    final auth = context.read<AuthProvider>();
+    final ok = await provider.quickSale(
+      item: item,
+      markedBy: auth.user?.uid ?? 'admin',
+    );
+    if (!mounted) return;
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(provider.error ?? 'Failed to record sale'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    final lastSale = provider.sales.firstOrNull;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('1 × ${item.name} · Rs. ${item.defaultPrice.toInt()}'),
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 4),
+      action: lastSale == null
+          ? null
+          : SnackBarAction(
+              label: 'Undo',
+              onPressed: () => provider.deleteSale(lastSale),
+            ),
+    ));
   }
 
   Future<void> _openRecordSheet([ConcessionItemEntity? preselect]) async {
@@ -35,6 +76,18 @@ class _ConcessionsPageState extends State<ConcessionsPage> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (_) => _RecordSaleSheet(preselect: preselect),
+    );
+  }
+
+  Future<void> _openEditSheet(ConcessionSaleEntity sale) async {
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) => _RecordSaleSheet(editing: sale),
     );
   }
 
@@ -201,6 +254,20 @@ class _ConcessionsPageState extends State<ConcessionsPage> {
                                       height: 1.1,
                                     ),
                                   ),
+                                  if (provider.todayExpense > 0) ...[
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      'Expense Rs. ${provider.todayExpense.toInt()} · '
+                                      'Net Rs. ${provider.todayNet.toInt()}',
+                                      style: TextStyle(
+                                        color: provider.todayNet >= 0
+                                            ? const Color(0xFF9FBA8B)
+                                            : const Color(0xFFE05757),
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
                                 ],
                               ),
                             ),
@@ -209,7 +276,72 @@ class _ConcessionsPageState extends State<ConcessionsPage> {
                       ),
                     ),
                   ),
-                  // Quick-add item chips
+                  // Expenses entry — sub-section button taking admin to
+                  // the dedicated expense ledger.
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+                      child: InkWell(
+                        onTap: () =>
+                            context.push(RoutePaths.concessionExpenses),
+                        borderRadius: BorderRadius.circular(14),
+                        child: Container(
+                          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                          decoration: BoxDecoration(
+                            color: cs.surfaceContainerLow,
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: cs.outlineVariant),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 38,
+                                height: 38,
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFE05757)
+                                      .withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                alignment: Alignment.center,
+                                child: const Icon(
+                                  Icons.receipt_long_rounded,
+                                  color: Color(0xFFE05757),
+                                  size: 20,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Cafe expenses',
+                                      style: theme.textTheme.titleSmall
+                                          ?.copyWith(
+                                              fontWeight: FontWeight.w800),
+                                    ),
+                                    Text(
+                                      'This month: Rs. ${provider.monthExpense.toInt()} · '
+                                      'Week: Rs. ${provider.weekExpense.toInt()}',
+                                      style: theme.textTheme.bodySmall
+                                          ?.copyWith(
+                                              color: cs.onSurfaceVariant),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Icon(Icons.chevron_right_rounded,
+                                  color: cs.onSurfaceVariant
+                                      .withValues(alpha: 0.7)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  // Quick-add item chips. Search + popularity ordering
+                  // becomes important as the catalog grows past a
+                  // handful of items.
                   if (provider.activeItems.isNotEmpty)
                     SliverToBoxAdapter(
                       child: Padding(
@@ -217,55 +349,135 @@ class _ConcessionsPageState extends State<ConcessionsPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Quick record',
-                                style: theme.textTheme.titleSmall?.copyWith(
-                                    fontWeight: FontWeight.w800)),
-                            const SizedBox(height: 8),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
+                            Row(
                               children: [
-                                for (final item in provider.activeItems)
-                                  InkWell(
-                                    borderRadius: BorderRadius.circular(10),
-                                    onTap: () => _openRecordSheet(item),
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 12, vertical: 8),
-                                      decoration: BoxDecoration(
-                                        color: cs.surfaceContainerHigh,
-                                        borderRadius: BorderRadius.circular(10),
-                                        border: Border.all(
-                                            color: cs.outlineVariant),
-                                      ),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(Icons.add_rounded,
-                                              size: 14,
-                                              color: AppColors.brandGreen),
-                                          const SizedBox(width: 4),
-                                          Text(
-                                            item.name,
-                                            style: theme.textTheme.bodyMedium
-                                                ?.copyWith(
-                                                    fontWeight:
-                                                        FontWeight.w700),
-                                          ),
-                                          const SizedBox(width: 6),
-                                          Text(
-                                            'Rs. ${item.defaultPrice.toInt()}',
-                                            style: theme.textTheme.bodySmall
-                                                ?.copyWith(
-                                              color: cs.onSurfaceVariant,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
+                                Text('Quick record',
+                                    style: theme.textTheme.titleSmall?.copyWith(
+                                        fontWeight: FontWeight.w800)),
+                                const SizedBox(width: 6),
+                                Text(
+                                  '· tap = sell 1, hold for custom',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: cs.onSurfaceVariant,
                                   ),
+                                ),
                               ],
                             ),
+                            const SizedBox(height: 8),
+                            // Search — instant filter over the chip list.
+                            TextField(
+                              controller: _searchCtrl,
+                              onChanged: (v) =>
+                                  setState(() => _query = v.trim()),
+                              decoration: InputDecoration(
+                                hintText: 'Search items',
+                                prefixIcon: const Icon(
+                                    Icons.search_rounded,
+                                    size: 18),
+                                suffixIcon: _query.isEmpty
+                                    ? null
+                                    : IconButton(
+                                        icon: const Icon(
+                                            Icons.clear_rounded, size: 16),
+                                        onPressed: () {
+                                          _searchCtrl.clear();
+                                          setState(() => _query = '');
+                                        },
+                                      ),
+                                isDense: true,
+                                filled: true,
+                                fillColor: cs.surfaceContainerLow,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                  borderSide:
+                                      BorderSide(color: cs.outlineVariant),
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                  borderSide:
+                                      BorderSide(color: cs.outlineVariant),
+                                ),
+                                contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 0),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            Builder(builder: (_) {
+                              final q = _query.toLowerCase();
+                              final filtered = q.isEmpty
+                                  ? provider.popularItems
+                                  : provider.popularItems
+                                      .where((it) => it.name
+                                          .toLowerCase()
+                                          .contains(q))
+                                      .toList();
+                              if (filtered.isEmpty) {
+                                return Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                      vertical: 6),
+                                  child: Text(
+                                    'No items match "$_query"',
+                                    style: theme.textTheme.bodySmall
+                                        ?.copyWith(
+                                            color: cs.onSurfaceVariant),
+                                  ),
+                                );
+                              }
+                              return Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  for (final item in filtered)
+                                    InkWell(
+                                      borderRadius:
+                                          BorderRadius.circular(10),
+                                      onTap: () => _quickRecord(item),
+                                      onLongPress: () =>
+                                          _openRecordSheet(item),
+                                      child: Container(
+                                        padding:
+                                            const EdgeInsets.symmetric(
+                                                horizontal: 12,
+                                                vertical: 8),
+                                        decoration: BoxDecoration(
+                                          color: cs.surfaceContainerHigh,
+                                          borderRadius:
+                                              BorderRadius.circular(10),
+                                          border: Border.all(
+                                              color: cs.outlineVariant),
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(Icons.add_rounded,
+                                                size: 14,
+                                                color:
+                                                    AppColors.brandGreen),
+                                            const SizedBox(width: 4),
+                                            Text(
+                                              item.name,
+                                              style: theme.textTheme
+                                                  .bodyMedium
+                                                  ?.copyWith(
+                                                      fontWeight:
+                                                          FontWeight.w700),
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Text(
+                                              'Rs. ${item.defaultPrice.toInt()}',
+                                              style: theme.textTheme
+                                                  .bodySmall
+                                                  ?.copyWith(
+                                                color: cs.onSurfaceVariant,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              );
+                            }),
                           ],
                         ),
                       ),
@@ -313,6 +525,7 @@ class _ConcessionsPageState extends State<ConcessionsPage> {
                           sale: provider.sales[i],
                           onDelete: () =>
                               _confirmDeleteSale(provider.sales[i]),
+                          onEdit: () => _openEditSheet(provider.sales[i]),
                         ),
                         separatorBuilder: (_, __) =>
                             const SizedBox(height: 8),
@@ -341,7 +554,12 @@ class _ConcessionsPageState extends State<ConcessionsPage> {
 class _SaleRow extends StatelessWidget {
   final ConcessionSaleEntity sale;
   final VoidCallback onDelete;
-  const _SaleRow({required this.sale, required this.onDelete});
+  final VoidCallback onEdit;
+  const _SaleRow({
+    required this.sale,
+    required this.onDelete,
+    required this.onEdit,
+  });
 
   String _timeAgo(DateTime t) {
     final diff = DateTime.now().difference(t);
@@ -356,7 +574,12 @@ class _SaleRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    return Container(
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onEdit,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
       padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
       decoration: BoxDecoration(
         color: cs.surfaceContainerLow,
@@ -414,6 +637,8 @@ class _SaleRow extends StatelessWidget {
                 size: 18, color: cs.onSurfaceVariant),
           ),
         ],
+      ),
+        ),
       ),
     );
   }
@@ -490,7 +715,10 @@ class _Empty extends StatelessWidget {
 
 class _RecordSaleSheet extends StatefulWidget {
   final ConcessionItemEntity? preselect;
-  const _RecordSaleSheet({this.preselect});
+  /// If set, the sheet runs in edit mode and updates this sale instead of
+  /// recording a new one.
+  final ConcessionSaleEntity? editing;
+  const _RecordSaleSheet({this.preselect, this.editing});
 
   @override
   State<_RecordSaleSheet> createState() => _RecordSaleSheetState();
@@ -498,16 +726,39 @@ class _RecordSaleSheet extends StatefulWidget {
 
 class _RecordSaleSheetState extends State<_RecordSaleSheet> {
   ConcessionItemEntity? _picked;
-  final _qtyCtrl = TextEditingController(text: '1');
-  final _amountCtrl = TextEditingController();
-  final _notesCtrl = TextEditingController();
+  late final TextEditingController _qtyCtrl;
+  late final TextEditingController _amountCtrl;
+  late final TextEditingController _notesCtrl;
   bool _amountTouched = false;
   bool _submitting = false;
+
+  bool get _isEditing => widget.editing != null;
 
   @override
   void initState() {
     super.initState();
+    final editing = widget.editing;
+    _qtyCtrl = TextEditingController(
+        text: editing?.quantity.toString() ?? '1');
+    _amountCtrl = TextEditingController(
+        text: editing != null ? editing.amount.toInt().toString() : '');
+    _notesCtrl = TextEditingController(text: editing?.notes ?? '');
     _picked = widget.preselect;
+    if (editing != null) {
+      // Editing: try to resolve the originally-picked catalog item by id.
+      // If the item was deleted or unknown, leave _picked null and fall
+      // back to displaying the denormalized itemName.
+      _amountTouched = true; // don't auto-recompute from default price.
+      final items = context.read<ConcessionProvider>().activeItems;
+      ConcessionItemEntity? match;
+      for (final it in items) {
+        if (it.id == editing.itemId) {
+          match = it;
+          break;
+        }
+      }
+      _picked = match;
+    }
     _refreshAmountFromDefault();
   }
 
@@ -534,46 +785,68 @@ class _RecordSaleSheetState extends State<_RecordSaleSheet> {
   bool get _canSave {
     final qty = int.tryParse(_qtyCtrl.text.trim()) ?? 0;
     final amount = double.tryParse(_amountCtrl.text.trim()) ?? 0;
+    final hasName = _picked != null ||
+        (widget.editing?.itemName.isNotEmpty ?? false);
     // 0 amount is allowed (complimentary / free item).
-    return (_picked != null || _customName.isNotEmpty) &&
-        qty > 0 &&
-        amount >= 0 &&
-        !_submitting;
+    return hasName && qty > 0 && amount >= 0 && !_submitting;
   }
-
-  String get _customName => _picked?.name ?? '';
 
   Future<void> _save() async {
     final qty = int.tryParse(_qtyCtrl.text.trim()) ?? 0;
     final amount = double.tryParse(_amountCtrl.text.trim()) ?? 0;
     if (qty <= 0 || amount < 0) return;
-    if (_picked == null) return;
+
+    final editing = widget.editing;
+    // Edit mode: catalog item may have been deleted since — fall back to
+    // the denormalized itemName from the original sale.
+    final itemName = _picked?.name ?? editing?.itemName ?? '';
+    if (itemName.isEmpty) return;
 
     final auth = context.read<AuthProvider>();
     final provider = context.read<ConcessionProvider>();
     setState(() => _submitting = true);
-    final ok = await provider.recordSale(
-      item: _picked,
-      itemName: _picked!.name,
-      quantity: qty,
-      amount: amount,
-      notes: _notesCtrl.text.trim().isEmpty
-          ? null
-          : _notesCtrl.text.trim(),
-      markedBy: auth.user?.uid ?? 'admin',
-    );
+    final notes = _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim();
+
+    final bool ok;
+    if (_isEditing) {
+      ok = await provider.updateSale(
+        original: editing!,
+        item: _picked,
+        itemName: itemName,
+        quantity: qty,
+        amount: amount,
+        notes: notes,
+      );
+    } else {
+      if (_picked == null) {
+        setState(() => _submitting = false);
+        return;
+      }
+      ok = await provider.recordSale(
+        item: _picked,
+        itemName: _picked!.name,
+        quantity: qty,
+        amount: amount,
+        notes: notes,
+        markedBy: auth.user?.uid ?? 'admin',
+      );
+    }
     if (!mounted) return;
     setState(() => _submitting = false);
     if (ok) {
       Navigator.of(context).pop();
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(
-            '$qty × ${_picked!.name} · Rs. ${amount.toInt()} recorded'),
+          _isEditing
+              ? 'Updated: $qty × $itemName · Rs. ${amount.toInt()}'
+              : '$qty × $itemName · Rs. ${amount.toInt()} recorded',
+        ),
         behavior: SnackBarBehavior.floating,
       ));
     } else {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(provider.error ?? 'Failed to record sale'),
+        content: Text(provider.error ??
+            (_isEditing ? 'Failed to update sale' : 'Failed to record sale')),
         behavior: SnackBarBehavior.floating,
       ));
     }
@@ -603,7 +876,7 @@ class _RecordSaleSheetState extends State<_RecordSaleSheet> {
             ),
             const SizedBox(height: 14),
             Text(
-              'Record a sale',
+              _isEditing ? 'Edit sale' : 'Record a sale',
               style: theme.textTheme.titleLarge
                   ?.copyWith(fontWeight: FontWeight.w800),
             ),
@@ -732,7 +1005,7 @@ class _RecordSaleSheetState extends State<_RecordSaleSheet> {
                         child: CircularProgressIndicator(
                             strokeWidth: 2.5, color: Colors.white),
                       )
-                    : const Text('Record sale'),
+                    : Text(_isEditing ? 'Save changes' : 'Record sale'),
               ),
             ),
           ],

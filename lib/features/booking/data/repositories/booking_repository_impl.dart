@@ -68,6 +68,19 @@ class BookingRepositoryImpl implements BookingRepository {
   }
 
   @override
+  Future<void> updateBookingCustomer(
+    String bookingId, {
+    String? customerName,
+    String? userPhone,
+  }) {
+    return _remoteDataSource.updateBookingCustomer(
+      bookingId,
+      customerName: customerName,
+      userPhone: userPhone,
+    );
+  }
+
+  @override
   Future<SlotConfigEntity> getSlotConfig(String turfId) {
     return _remoteDataSource.getSlotConfig(turfId);
   }
@@ -87,6 +100,8 @@ class BookingRepositoryImpl implements BookingRepository {
     required double weekendPrice,
     required String updatedBy,
     int? freeGameThreshold,
+    int? dayStartHour,
+    int? eveningStartHour,
   }) {
     return _remoteDataSource.updateSlotPricing(
       turfId: turfId,
@@ -96,6 +111,8 @@ class BookingRepositoryImpl implements BookingRepository {
       weekendPrice: weekendPrice,
       updatedBy: updatedBy,
       freeGameThreshold: freeGameThreshold,
+      dayStartHour: dayStartHour,
+      eveningStartHour: eveningStartHour,
     );
   }
 
@@ -144,7 +161,28 @@ class BookingRepositoryImpl implements BookingRepository {
   }
 
   @override
-  Future<void> claimFreeGame(String turfId, String phone) {
-    return _remoteDataSource.claimFreeGame(turfId, phone);
+  Future<void> claimFreeGame(String turfId, String phone,
+      {String? bookingId}) {
+    return _remoteDataSource.claimFreeGame(turfId, phone,
+        bookingId: bookingId);
+  }
+
+  @override
+  Future<Map<String, int>> liveRewardCounts(String turfId) {
+    return _remoteDataSource.liveRewardCounts(turfId);
+  }
+
+  @override
+  Future<void> setRewardExcluded(
+      String turfId, String phone, bool excluded) {
+    return _remoteDataSource.setRewardExcluded(turfId, phone, excluded);
+  }
+
+  @override
+  Future<List<({String name, String phone})>> listRecentCustomers(
+    String turfId, {
+    int limit = 200,
+  }) {
+    return _remoteDataSource.listRecentCustomers(turfId, limit: limit);
   }
 }

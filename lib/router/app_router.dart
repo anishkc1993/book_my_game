@@ -27,8 +27,11 @@ import '../features/academy/presentation/pages/academy_players_page.dart';
 import '../features/monthly_plans/presentation/pages/monthly_plans_page.dart';
 import '../features/concessions/presentation/pages/concessions_page.dart';
 import '../features/concessions/presentation/pages/concession_collections_page.dart';
+import '../features/concessions/presentation/pages/concession_expenses_page.dart';
 import '../features/concessions/presentation/pages/concession_history_page.dart';
 import '../features/auth/presentation/pages/more_actions_page.dart';
+import '../features/booking/presentation/pages/rewards_page.dart';
+import '../features/booking/presentation/pages/public_schedule_page.dart';
 
 class AppRouter {
   final AuthProvider authProvider;
@@ -78,7 +81,25 @@ class AppRouter {
     final isAuthenticated = authProvider.isAuthenticated;
     final isLoading = authProvider.status == AuthStatus.initial ||
         authProvider.status == AuthStatus.loading;
+    // Use both matchedLocation and the raw URI path — depending on the
+    // platform / when redirect fires, one or the other may be the
+    // parameterised pattern (e.g. "/turf/:turfId/schedule") instead of
+    // the resolved URL ("/turf/abc/schedule"). We treat ANY match as
+    // public.
     final currentPath = state.matchedLocation;
+    final rawPath = state.uri.path;
+
+    // Public schedule pages — anyone can view without logging in.
+    bool looksPublic(String p) =>
+        p.startsWith('/turf/') && p.endsWith('/schedule');
+    final isPublicRoute = looksPublic(currentPath) || looksPublic(rawPath);
+
+    // Public routes always pass through — even while auth is loading,
+    // we don't want to wait for an auth resolve that may never happen
+    // (the visitor has no session).
+    if (isPublicRoute) {
+      return null;
+    }
 
     if (isLoading) {
       return null;
@@ -230,6 +251,25 @@ class AppRouter {
           path: RoutePaths.concessionHistory,
           name: RouteNames.concessionHistory,
           builder: (context, state) => const ConcessionHistoryPage(),
+        ),
+        GoRoute(
+          path: RoutePaths.concessionExpenses,
+          name: RouteNames.concessionExpenses,
+          builder: (context, state) => const ConcessionExpensesPage(),
+        ),
+        GoRoute(
+          path: RoutePaths.rewards,
+          name: RouteNames.rewards,
+          builder: (context, state) => const RewardsPage(),
+        ),
+        // Public — anyone can view, no auth needed. Path param `:turfId`.
+        GoRoute(
+          path: RoutePaths.publicSchedule,
+          name: RouteNames.publicSchedule,
+          builder: (context, state) {
+            final turfId = state.pathParameters['turfId'] ?? '';
+            return PublicSchedulePage(turfId: turfId);
+          },
         ),
       ];
 }

@@ -629,6 +629,7 @@ class _PlanEditorSheetState extends State<_PlanEditorSheet> {
   late final Set<int> _selectedDays;
   late final Set<int> _selectedHours;
   DateTime _startDate = DateTime.now();
+  DateTime? _endDate;
   String? _nameError;
   String? _phoneError;
   bool _submitting = false;
@@ -653,6 +654,7 @@ class _PlanEditorSheetState extends State<_PlanEditorSheet> {
     _selectedDays = {...?e?.daysOfWeek};
     _selectedHours = {...?e?.startHours};
     _startDate = e?.startDate ?? DateTime.now();
+    _endDate = e?.endDate;
   }
 
   @override
@@ -718,6 +720,7 @@ class _PlanEditorSheetState extends State<_PlanEditorSheet> {
       startHours: hoursSorted,
       monthlyFee: fee,
       startDate: _startDate,
+      endDate: _endDate,
       notes: notes,
     );
 
@@ -746,6 +749,16 @@ class _PlanEditorSheetState extends State<_PlanEditorSheet> {
       lastDate: DateTime.now().add(const Duration(days: 365)),
     );
     if (picked != null) setState(() => _startDate = picked);
+  }
+
+  Future<void> _pickEndDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _endDate ?? _startDate.add(const Duration(days: 30)),
+      firstDate: _startDate,
+      lastDate: DateTime.now().add(const Duration(days: 365 * 3)),
+    );
+    if (picked != null) setState(() => _endDate = picked);
   }
 
   String _fmtHour(int h) {
@@ -1022,6 +1035,60 @@ class _PlanEditorSheetState extends State<_PlanEditorSheet> {
                     const Spacer(),
                     Icon(Icons.keyboard_arrow_down_rounded,
                         size: 20, color: cs.onSurfaceVariant),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            const _Label('Ending on (optional)'),
+            const SizedBox(height: 8),
+            InkWell(
+              onTap: _pickEndDate,
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 14, vertical: 14),
+                decoration: BoxDecoration(
+                  color: cs.surfaceContainerLow,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: _endDate != null
+                        ? cs.outlineVariant
+                        : cs.outlineVariant.withValues(alpha: 0.5),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.event_busy_rounded,
+                        size: 18,
+                        color: _endDate != null
+                            ? cs.onSurface
+                            : cs.onSurfaceVariant),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        _endDate != null
+                            ? '${_endDate!.day}/${_endDate!.month}/${_endDate!.year}'
+                            : 'No end date — runs indefinitely',
+                        style: theme.textTheme.bodyLarge?.copyWith(
+                          fontWeight: _endDate != null
+                              ? FontWeight.w600
+                              : FontWeight.w400,
+                          color: _endDate != null
+                              ? cs.onSurface
+                              : cs.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    if (_endDate != null)
+                      GestureDetector(
+                        onTap: () => setState(() => _endDate = null),
+                        child: Icon(Icons.close_rounded,
+                            size: 18, color: cs.onSurfaceVariant),
+                      )
+                    else
+                      Icon(Icons.keyboard_arrow_down_rounded,
+                          size: 20, color: cs.onSurfaceVariant),
                   ],
                 ),
               ),
