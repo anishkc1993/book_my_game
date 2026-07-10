@@ -10,7 +10,7 @@ class AppConstants {
   static const String defaultCountryCode = '+977';
 
   // Booking slot hours
-  static const int slotStartHour = 6; // 6 AM
+  static const int slotStartHour = 5; // 5 AM
   static const int slotEndHour = 22; // 10 PM (last bookable slot is 9-10 PM)
 
   // Firestore collections

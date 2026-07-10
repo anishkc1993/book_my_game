@@ -658,6 +658,27 @@ class BookingProvider extends ChangeNotifier {
     }
   }
 
+  /// Cancel a regular booking for one specific [date] only — the recurring
+  /// schedule is unaffected. Creates a persisted CANCELLED doc that blocks
+  /// synthesis for that day and shows in the booking list.
+  Future<bool> cancelRegularForDate(BookingEntity regular, DateTime date) async {
+    if (!_hasTurf) return false;
+    try {
+      await _repository.cancelRegularForDate(_turfId!, regular, date);
+      await Future.wait([
+        fetchBookingsForSelectedDate(),
+        fetchSlotsForSelectedDate(),
+        fetchTodayBookings(),
+      ]);
+      _bumpMutation();
+      return true;
+    } catch (e) {
+      _regularsError = e.toString().replaceAll('Exception: ', '');
+      notifyListeners();
+      return false;
+    }
+  }
+
   Future<bool> deleteRegularBooking(String id) async {
     try {
       await _repository.deleteRegularBooking(id);
@@ -868,6 +889,18 @@ class BookingProvider extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       debugPrint('Error fetching reward: $e');
+    }
+  }
+
+  /// Booking datetimes counting toward [phone]'s current cycle, most-recent
+  /// first. Fetched fresh each time — resets naturally after claimFreeGame.
+  Future<List<DateTime>> getRewardBookingDates(String phone) async {
+    if (!_hasTurf) return [];
+    try {
+      return await _repository.getRewardBookingDates(_turfId!, phone);
+    } catch (e) {
+      debugPrint('getRewardBookingDates error: $e');
+      return [];
     }
   }
 

@@ -71,6 +71,9 @@ abstract class BookingRepository {
   });
 
   /// Create a regular (recurring) booking. The booking's `turfId` MUST be set.
+  Future<void> cancelRegularForDate(
+      String turfId, BookingEntity regular, DateTime date);
+
   Future<RegularBookingEntity> createRegularBooking(
       RegularBookingEntity booking);
 
@@ -120,4 +123,8 @@ abstract class BookingRepository {
   /// Admin-only: mark a customer as not eligible for free-game rewards.
   Future<void> setRewardExcluded(
       String turfId, String phone, bool excluded);
+
+  /// Booking datetimes that count toward [phone]'s current reward cycle,
+  /// most-recent first. Empty after claiming (cycle resets).
+  Future<List<DateTime>> getRewardBookingDates(String turfId, String phone);
 }

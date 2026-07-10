@@ -81,6 +81,18 @@ class _RewardsPageState extends State<RewardsPage> {
     return (name != null && name.isNotEmpty) ? name : phone;
   }
 
+  void _showDatesSheet(BuildContext context, _RewardView view, String customerName) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _RewardDatesSheet(
+        view: view,
+        customerName: customerName,
+      ),
+    );
+  }
+
   Future<void> _toggleExcluded(
       BookingProvider bp, _RewardView view, bool nextExcluded) async {
     final ok = await bp.setRewardExcluded(view.phone, nextExcluded);
@@ -390,6 +402,7 @@ class _RewardsPageState extends State<RewardsPage> {
                           onClaim: () => _confirmClaim(bp, eligible[i]),
                           onToggleExcluded: (v) =>
                               _toggleExcluded(bp, eligible[i], v),
+                          onTap: () => _showDatesSheet(context, eligible[i], _nameFor(eligible[i].phone)),
                         ),
                       ),
                     ),
@@ -410,6 +423,7 @@ class _RewardsPageState extends State<RewardsPage> {
                           canClaim: false,
                           onToggleExcluded: (v) =>
                               _toggleExcluded(bp, inProgress[i], v),
+                          onTap: () => _showDatesSheet(context, inProgress[i], _nameFor(inProgress[i].phone)),
                         ),
                       ),
                     ),
@@ -430,6 +444,7 @@ class _RewardsPageState extends State<RewardsPage> {
                           canClaim: false,
                           onToggleExcluded: (v) =>
                               _toggleExcluded(bp, excluded[i], v),
+                          onTap: () => _showDatesSheet(context, excluded[i], _nameFor(excluded[i].phone)),
                         ),
                       ),
                     ),
@@ -450,6 +465,7 @@ class _RewardsPageState extends State<RewardsPage> {
                           canClaim: false,
                           onToggleExcluded: (v) =>
                               _toggleExcluded(bp, claimedOnly[i], v),
+                          onTap: () => _showDatesSheet(context, claimedOnly[i], _nameFor(claimedOnly[i].phone)),
                         ),
                       ),
                     ),
@@ -512,6 +528,7 @@ class _RewardRow extends StatelessWidget {
   final int threshold;
   final bool canClaim;
   final VoidCallback? onClaim;
+  final VoidCallback? onTap;
   /// Toggles the admin-controlled `excluded` flag. Receives the new
   /// state (true → opt-out, false → opt back in).
   final ValueChanged<bool>? onToggleExcluded;
@@ -521,6 +538,7 @@ class _RewardRow extends StatelessWidget {
     required this.threshold,
     required this.canClaim,
     this.onClaim,
+    this.onTap,
     this.onToggleExcluded,
   });
 
@@ -531,7 +549,10 @@ class _RewardRow extends StatelessWidget {
     final progress = view.progress;
     final ratio = threshold > 0 ? (progress / threshold).clamp(0.0, 1.0) : 0.0;
 
-    return Container(
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
       decoration: BoxDecoration(
         color: canClaim
@@ -683,7 +704,8 @@ class _RewardRow extends StatelessWidget {
           ],
         ],
       ),
-    );
+    ),  // Container
+    );  // InkWell
   }
 }
 
@@ -704,4 +726,190 @@ class _RewardView {
     required this.lastClaimedAt,
     this.excluded = false,
   });
+}
+
+/// Bottom sheet showing all booking dates in the customer's current reward
+/// cycle. Fetched fresh on open; empty after a free game is claimed.
+class _RewardDatesSheet extends StatefulWidget {
+  final _RewardView view;
+  final String customerName;
+  const _RewardDatesSheet({required this.view, required this.customerName});
+
+  @override
+  State<_RewardDatesSheet> createState() => _RewardDatesSheetState();
+}
+
+class _RewardDatesSheetState extends State<_RewardDatesSheet> {
+  List<DateTime>? _dates;
+  bool _loading = true;
+
+  static const _weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  static const _months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _fetch();
+  }
+
+  Future<void> _fetch() async {
+    final dates = await context
+        .read<BookingProvider>()
+        .getRewardBookingDates(widget.view.phone);
+    if (mounted) setState(() { _dates = dates; _loading = false; });
+  }
+
+  String _fmt(DateTime dt) {
+    final wkd = _weekdays[dt.weekday - 1];
+    final mon = _months[dt.month - 1];
+    final h = dt.hour;
+    final hLabel = h == 0 ? '12 AM' : h < 12 ? '$h AM' : h == 12 ? '12 PM' : '${h - 12} PM';
+    final hEnd = h + 1;
+    final eLabel = hEnd == 12 ? '12 PM' : hEnd < 12 ? '$hEnd AM' : '${hEnd - 12} PM';
+    return '$wkd, ${dt.day} $mon ${dt.year}  ·  $hLabel – $eLabel';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final dates = _dates ?? [];
+
+    return Container(
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 12),
+          Container(
+            width: 40, height: 4,
+            decoration: BoxDecoration(
+              color: cs.outlineVariant,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.customerName,
+                        style: theme.textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                      Text(
+                        widget.view.phone,
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: cs.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: AppColors.brandGreen.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    '${widget.view.progress} game${widget.view.progress == 1 ? '' : 's'}',
+                    style: const TextStyle(
+                      color: AppColors.brandGreen,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          Divider(height: 1, color: cs.outlineVariant),
+          if (_loading)
+            const Padding(
+              padding: EdgeInsets.all(32),
+              child: CircularProgressIndicator(),
+            )
+          else if (dates.isEmpty)
+            Padding(
+              padding: const EdgeInsets.all(32),
+              child: Text(
+                widget.view.totalClaimed > 0
+                    ? 'No games yet in current cycle.\nFree game was claimed — counter reset.'
+                    : 'No games played yet.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium
+                    ?.copyWith(color: cs.onSurfaceVariant),
+              ),
+            )
+          else
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.55,
+              ),
+              child: ListView.separated(
+                shrinkWrap: true,
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                itemCount: dates.length,
+                separatorBuilder: (_, __) => Divider(
+                  height: 1,
+                  color: cs.outlineVariant.withValues(alpha: 0.5),
+                ),
+                itemBuilder: (_, i) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 11),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 28,
+                          height: 28,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: AppColors.brandGreen.withValues(alpha: 0.10),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Text(
+                            '${i + 1}',
+                            style: const TextStyle(
+                              color: AppColors.brandGreen,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            _fmt(dates[i]),
+                            style: theme.textTheme.bodyMedium
+                                ?.copyWith(fontWeight: FontWeight.w500),
+                          ),
+                        ),
+                        Icon(Icons.sports_soccer_rounded,
+                            size: 16, color: cs.onSurfaceVariant),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          const SizedBox(height: 12),
+        ],
+      ),
+    );
+  }
 }

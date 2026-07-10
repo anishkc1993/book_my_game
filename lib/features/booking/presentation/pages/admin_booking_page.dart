@@ -240,6 +240,9 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
                           onClaimFreeGame: eligible
                               ? () => _claimFreeGame(booking)
                               : null,
+                          onCancelForDay: booking.isRegular && !booking.isCancelled
+                              ? () => _cancelRegularForDay(booking)
+                              : null,
                         ),
                       );
                     },
@@ -405,6 +408,46 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
       content:
           Text(ok ? 'Free game claimed' : 'Failed to claim free game'),
       backgroundColor: ok ? AppColors.brandGreen : cs.error,
+      behavior: SnackBarBehavior.floating,
+      margin: const EdgeInsets.all(16),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    ));
+  }
+
+  Future<void> _cancelRegularForDay(BookingEntity booking) async {
+    final bookingProvider = context.read<BookingProvider>();
+    final cs = Theme.of(context).colorScheme;
+    final dateLabel = _dateLabel(booking.date);
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cancel for today only'),
+        content: Text(
+          'Cancel ${booking.customerName ?? booking.userPhone}\'s regular slot '
+          'on $dateLabel only? The recurring schedule continues on other days.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Keep'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.orange),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Cancel today'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+    final success =
+        await bookingProvider.cancelRegularForDate(booking, booking.date);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(success ? 'Cancelled for $dateLabel' : 'Failed to cancel'),
+      backgroundColor: success ? Colors.orange : cs.error,
       behavior: SnackBarBehavior.floating,
       margin: const EdgeInsets.all(16),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -1208,6 +1251,7 @@ class _BookingCard extends StatelessWidget {
   final VoidCallback onEditDetails;
   final bool freeGameEligible;
   final VoidCallback? onClaimFreeGame;
+  final VoidCallback? onCancelForDay;
 
   const _BookingCard({
     required this.booking,
@@ -1216,6 +1260,7 @@ class _BookingCard extends StatelessWidget {
     required this.onEditDetails,
     this.freeGameEligible = false,
     this.onClaimFreeGame,
+    this.onCancelForDay,
   });
 
   @override
@@ -1485,20 +1530,21 @@ class _BookingCard extends StatelessWidget {
                   ),
                   // Three-dot overflow menu — admin-only secondary
                   // actions live here so the action row stays uncluttered.
-                  if (!booking.isRegular)
-                    PopupMenuButton<String>(
-                      tooltip: 'More',
-                      icon: Icon(Icons.more_horiz_rounded,
-                          color: cs.onSurfaceVariant),
-                      iconSize: 20,
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(
-                          minWidth: 32, minHeight: 32),
-                      onSelected: (value) {
-                        if (value == 'edit_details') onEditDetails();
-                      },
-                      itemBuilder: (_) => const [
-                        PopupMenuItem<String>(
+                  PopupMenuButton<String>(
+                    tooltip: 'More',
+                    icon: Icon(Icons.more_horiz_rounded,
+                        color: cs.onSurfaceVariant),
+                    iconSize: 20,
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 32, minHeight: 32),
+                    onSelected: (value) {
+                      if (value == 'edit_details') onEditDetails();
+                      if (value == 'cancel_day') onCancelForDay?.call();
+                    },
+                    itemBuilder: (_) => [
+                      if (!booking.isRegular)
+                        const PopupMenuItem<String>(
                           value: 'edit_details',
                           child: Row(
                             children: [
@@ -1508,8 +1554,20 @@ class _BookingCard extends StatelessWidget {
                             ],
                           ),
                         ),
-                      ],
-                    ),
+                      if (booking.isRegular && !booking.isCancelled)
+                        const PopupMenuItem<String>(
+                          value: 'cancel_day',
+                          child: Row(
+                            children: [
+                              Icon(Icons.event_busy_rounded,
+                                  size: 18, color: Colors.orange),
+                              SizedBox(width: 10),
+                              Text('Cancel for today'),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
                 ],
               ),
             ),

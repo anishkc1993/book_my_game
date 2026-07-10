@@ -50,6 +50,12 @@ abstract class BookingRemoteDataSource {
     int? eveningStartHour,
   });
 
+  /// Cancel a regular booking for one specific date without affecting the
+  /// recurring schedule. Creates a persisted CANCELLED booking doc that
+  /// blocks synthesis for that day and shows in the booking list.
+  Future<void> cancelRegularForDate(
+      String turfId, BookingEntity regular, DateTime date);
+
   Future<RegularBookingModel> createRegularBooking(RegularBookingModel booking);
   Future<List<RegularBookingModel>> getRegularBookings(String turfId);
   Future<void> deleteRegularBooking(String id);
@@ -80,6 +86,13 @@ abstract class BookingRemoteDataSource {
   /// reverse). Progress still tracks under the hood.
   Future<void> setRewardExcluded(
       String turfId, String phone, bool excluded);
+
+  /// Return the [DateTime] of every booking session that counts toward
+  /// [phone]'s current reward cycle (after their last claim), sorted
+  /// most-recent first. Resets naturally after [claimFreeGame] stamps
+  /// a new [lastClaimedAt].
+  Future<List<DateTime>> getRewardBookingDates(
+      String turfId, String phone);
 
   /// Distinct {name, phone} pairs from this turf's recent bookings, used
   /// to power the "pick from past customers" suggestion list in the
@@ -274,6 +287,9 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
           '📅 getSlotsForDate: Found ${bookingsSnapshot.docs.length} bookings');
 
       final bookedHours = <int>{};
+      // Track hours where the regular was explicitly cancelled for this day
+      // so we can free them back up from the regulars block below.
+      final cancelledRegularHours = <int>{};
       for (final doc in bookingsSnapshot.docs) {
         final data = doc.data();
         final status = data['status'] as String?;
@@ -282,10 +298,17 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
             status == 'COMPLETED') {
           final booking = BookingModel.fromFirestore(doc);
           bookedHours.add(booking.startTime.hour);
+        } else if (status == 'CANCELLED' &&
+            (data['isRegular'] as bool? ?? false)) {
+          final booking = BookingModel.fromFirestore(doc);
+          cancelledRegularHours.add(booking.startTime.hour);
         }
       }
 
       bookedHours.addAll(regulars.keys);
+      // A regular cancelled for this specific day frees its slot so a
+      // walk-in can be booked into the gap.
+      bookedHours.removeAll(cancelledRegularHours);
       bookedHours.addAll(plans.keys);
       for (final t in tournaments) {
         for (int h = t.startHour; h < t.endHour; h++) {
@@ -373,6 +396,49 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
       debugPrint('❌ createBooking ERROR: $e');
       if (e is ServerException) rethrow;
       throw ServerException('Failed to create booking: ${e.toString()}');
+    }
+  }
+
+  @override
+  Future<void> cancelRegularForDate(
+      String turfId, BookingEntity regular, DateTime date) async {
+    try {
+      final day = DateTime(date.year, date.month, date.day);
+      final dateKey = _getDateKey(day);
+      final start = DateTime(day.year, day.month, day.day,
+          regular.startTime.hour);
+      final end = DateTime(day.year, day.month, day.day,
+          regular.endTime.hour);
+
+      // Deterministic doc ID — idempotent if called twice for the same slot.
+      final docId =
+          'rcx_${regular.regularBookingId ?? regular.id}_$dateKey';
+
+      await _firestore
+          .collection(_bookingsCollection)
+          .doc(docId)
+          .set({
+        'userId': '',
+        'userPhone': regular.userPhone,
+        'customerName': regular.customerName,
+        'date': Timestamp.fromDate(day),
+        'dateKey': dateKey,
+        'startTime': Timestamp.fromDate(start),
+        'endTime': Timestamp.fromDate(end),
+        'status': 'CANCELLED',
+        'cancelledAt': FieldValue.serverTimestamp(),
+        'isPaid': false,
+        'basePrice': regular.basePrice,
+        'isRegular': true,
+        'regularBookingId': regular.regularBookingId ?? regular.id,
+        'createdByAdmin': true,
+        'turfId': turfId,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      debugPrint('❌ cancelRegularForDate ERROR: $e');
+      throw ServerException(
+          'Failed to cancel regular for date: ${e.toString()}');
     }
   }
 
@@ -509,17 +575,26 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
       final plans = await plansFuture;
       final tournaments = await tournamentsFuture;
 
-      // Cancelled bookings are dropped from the day view entirely —
-      // showing them takes a slot in the list and prevents the synthesizer
-      // from filling that hour with the regular/plan that would otherwise
-      // apply. The booking doc still exists in Firestore for auditing.
-      final bookings = snapshot.docs
-          .map((doc) => BookingModel.fromFirestore(doc))
-          .where((b) => !b.isCancelled)
-          .toList();
+      // Cancelled regular bookings are shown in the list (so admins can
+      // see the day-specific cancellation) and block their hour from being
+      // re-synthesized. Other cancelled bookings are dropped entirely.
+      final cancelledRegularByHour = <int, BookingModel>{};
+      final bookings = <BookingModel>[];
+      for (final doc in snapshot.docs) {
+        final b = BookingModel.fromFirestore(doc);
+        if (b.isCancelled && b.isRegular) {
+          cancelledRegularByHour[b.startTime.hour] = b;
+        } else if (!b.isCancelled) {
+          bookings.add(b);
+        }
+      }
+      // Include cancelled-regular entries so they render in the booking list.
+      bookings.addAll(cancelledRegularByHour.values);
 
       // Synthesize virtual entries for active regulars.
       final realHours = bookings.map((b) => b.startTime.hour).toSet();
+      // cancelledRegularByHour hours are already in realHours via the
+      // entries we just added, so synthesis is naturally blocked for them.
       regulars.forEach((hour, reg) {
         if (realHours.contains(hour)) return;
         final start = DateTime(date.year, date.month, date.day, hour);
@@ -1195,6 +1270,58 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
     } catch (e) {
       debugPrint('❌ liveRewardCounts: $e');
       return {};
+    }
+  }
+
+  @override
+  Future<List<DateTime>> getRewardBookingDates(
+      String turfId, String phone) async {
+    try {
+      final norm = _normalizePhone(phone);
+
+      // Fetch cycle start and bookings in parallel.
+      final rewardFuture = _rewardDoc(turfId, phone).get();
+      // Query all three phone representations so we catch bookings stored
+      // with any variant of the number.
+      final variants = [norm, '977$norm', '+977$norm'];
+      final bookingsFuture = _firestore
+          .collection(_bookingsCollection)
+          .where('turfId', isEqualTo: turfId)
+          .where('userPhone', whereIn: variants)
+          .get();
+
+      final rewardDoc = await rewardFuture;
+      final rewardData = rewardDoc.data() as Map<String, dynamic>?;
+      final lastClaimed =
+          (rewardData?['lastClaimedAt'] as Timestamp?)?.toDate();
+      final snap = await bookingsFuture;
+
+      final nowTs = DateTime.now();
+      final dates = <DateTime>[];
+
+      for (final d in snap.docs) {
+        final data = d.data();
+        final status = data['status'] as String?;
+        if (status == 'CANCELLED') continue;
+        if (data['isFreeGame'] as bool? ?? false) continue;
+        final endTime = (data['endTime'] as Timestamp?)?.toDate();
+        final played = status == 'COMPLETED' ||
+            (status == 'CONFIRMED' &&
+                endTime != null &&
+                endTime.isBefore(nowTs));
+        if (!played) continue;
+        final startTime = (data['startTime'] as Timestamp?)?.toDate();
+        if (startTime == null) continue;
+        // Cycle gate — same rule as liveRewardCounts.
+        if (lastClaimed != null && !startTime.isAfter(lastClaimed)) continue;
+        dates.add(startTime);
+      }
+
+      dates.sort((a, b) => b.compareTo(a)); // most recent first
+      return dates;
+    } catch (e) {
+      debugPrint('❌ getRewardBookingDates: $e');
+      return [];
     }
   }
 
