@@ -12,6 +12,12 @@ service cloud.firestore {
     function isAdminAt(tid) {
       return userDoc().role == 'ADMIN' && userDoc().turfId == tid;
     }
+    function isStaffAt(tid) {
+      return userDoc().role == 'STAFF' && userDoc().turfId == tid;
+    }
+    function isAdminOrStaffAt(tid) {
+      return isAdminAt(tid) || isStaffAt(tid);
+    }
 
     // Users collection — each user reads/writes their own doc.
     match /users/{userId} {
@@ -118,10 +124,13 @@ service cloud.firestore {
     // auth + turfId match.
     match /bookings/{bookingId} {
       allow read: if true;
+      // Staff can create bookings but not update/delete/pay.
       allow create: if request.auth != null
-        && request.resource.data.turfId == callerTurfId();
+        && request.resource.data.turfId == callerTurfId()
+        && isAdminOrStaffAt(callerTurfId());
       allow update, delete: if request.auth != null
-        && resource.data.turfId == callerTurfId();
+        && resource.data.turfId == callerTurfId()
+        && isAdminAt(callerTurfId());
     }
 
     // Regular bookings — public read, admin-only writes.

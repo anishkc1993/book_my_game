@@ -26,8 +26,7 @@ abstract class BookingRepository {
   Future<List<BookingEntity>> getUserBookings(String turfId, String userId);
 
   /// Get all bookings for a specific date at the given turf (admin view).
-  Future<List<BookingEntity>> getBookingsForDate(
-      String turfId, DateTime date);
+  Future<List<BookingEntity>> getBookingsForDate(String turfId, DateTime date);
 
   /// Cancel a booking by id.
   Future<void> cancelBooking(String bookingId);
@@ -74,6 +73,9 @@ abstract class BookingRepository {
   Future<void> cancelRegularForDate(
       String turfId, BookingEntity regular, DateTime date);
 
+  Future<void> restoreRegularForDate(
+      String turfId, BookingEntity cancelledBooking);
+
   Future<RegularBookingEntity> createRegularBooking(
       RegularBookingEntity booking);
 
@@ -107,7 +109,7 @@ abstract class BookingRepository {
   /// increments totalClaimed. When [bookingId] is provided, marks that
   /// booking as a free game (amount=0, isFreeGame=true) atomically.
   Future<void> claimFreeGame(String turfId, String phone,
-      {String? bookingId});
+      {String? bookingId, int threshold = 0});
 
   /// Live reward count per customer phone, computed from booking docs
   /// using the same rule the leaderboard uses. Free-game claims and

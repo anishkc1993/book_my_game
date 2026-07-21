@@ -201,7 +201,10 @@ class MonthlyPlanRemoteDataSourceImpl implements MonthlyPlanRemoteDataSource {
       batch.update(_plansCol(turfId).doc(planId), {
         'lastPaidMonth': month,
       });
-      batch.set(_paymentsCol(turfId).doc(), {
+      // Deterministic doc ID — double-tapping just overwrites the same
+      // record instead of creating a duplicate payment entry.
+      final paymentDocId = '${planId}_$month';
+      batch.set(_paymentsCol(turfId).doc(paymentDocId), {
         'planId': planId,
         'month': month,
         'amount': amount,

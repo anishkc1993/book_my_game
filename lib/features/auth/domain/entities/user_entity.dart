@@ -3,6 +3,7 @@ import 'package:equatable/equatable.dart';
 /// User roles in the system
 enum UserRole {
   admin('ADMIN'),
+  staff('STAFF'),
   customer('CUSTOMER');
 
   final String value;
@@ -64,6 +65,9 @@ class UserEntity extends Equatable {
 
   bool get isAuthenticated => uid.isNotEmpty;
   bool get isAdmin => role == UserRole.admin;
+  bool get isStaff => role == UserRole.staff;
+  /// True for both ADMIN and STAFF — can access the admin booking page.
+  bool get isAdminOrStaff => role == UserRole.admin || role == UserRole.staff;
   bool get isPremium => membership != MembershipTier.free;
   bool get hasTurf => turfId != null && turfId!.isNotEmpty;
 

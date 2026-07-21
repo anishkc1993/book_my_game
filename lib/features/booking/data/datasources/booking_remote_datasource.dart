@@ -56,6 +56,11 @@ abstract class BookingRemoteDataSource {
   Future<void> cancelRegularForDate(
       String turfId, BookingEntity regular, DateTime date);
 
+  /// Undo a day-specific cancellation — deletes the rcx_ doc so the
+  /// regular resumes synthesis for that date.
+  Future<void> restoreRegularForDate(
+      String turfId, BookingEntity cancelledBooking);
+
   Future<RegularBookingModel> createRegularBooking(RegularBookingModel booking);
   Future<List<RegularBookingModel>> getRegularBookings(String turfId);
   Future<void> deleteRegularBooking(String id);
@@ -79,8 +84,12 @@ abstract class BookingRemoteDataSource {
   /// Claim a free game for [phone]. If [bookingId] is provided, that
   /// booking gets stamped as a free game (amount=0, isFreeGame=true) in
   /// the same atomic batch as the reward bump.
+  ///
+  /// When [threshold] > 0 the new cycle boundary is set to the timestamp
+  /// of the [threshold]-th game so any extra games carry forward instead
+  /// of being lost. Defaults to 0 (old behaviour: boundary = now).
   Future<void> claimFreeGame(String turfId, String phone,
-      {String? bookingId});
+      {String? bookingId, int threshold = 0});
 
   /// Mark a customer as not eligible for free-game rewards (or the
   /// reverse). Progress still tracks under the hood.
@@ -443,6 +452,28 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
   }
 
   @override
+  Future<void> restoreRegularForDate(
+      String turfId, BookingEntity cancelledBooking) async {
+    try {
+      // The doc ID used in cancelRegularForDate was deterministic.
+      final day = DateTime(cancelledBooking.date.year,
+          cancelledBooking.date.month, cancelledBooking.date.day);
+      final dateKey = _getDateKey(day);
+      final regularId =
+          cancelledBooking.regularBookingId ?? cancelledBooking.id ?? '';
+      if (regularId.isEmpty) {
+        throw const ServerException('Cannot identify regular booking to restore');
+      }
+      final docId = 'rcx_${regularId}_$dateKey';
+      await _firestore.collection(_bookingsCollection).doc(docId).delete();
+    } catch (e) {
+      debugPrint('❌ restoreRegularForDate ERROR: $e');
+      throw ServerException(
+          'Failed to restore regular booking: ${e.toString()}');
+    }
+  }
+
+  @override
   Future<List<BookingModel>> getUserBookings(
       String turfId, String userId) async {
     try {
@@ -575,26 +606,27 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
       final plans = await plansFuture;
       final tournaments = await tournamentsFuture;
 
-      // Cancelled regular bookings are shown in the list (so admins can
-      // see the day-specific cancellation) and block their hour from being
-      // re-synthesized. Other cancelled bookings are dropped entirely.
-      final cancelledRegularByHour = <int, BookingModel>{};
+      // Cancelled regular bookings are hidden from the list — the slot just
+      // appears available for walk-ins. Their hours are still tracked to
+      // block re-synthesis for that day. Other cancelled bookings are
+      // dropped entirely.
+      final cancelledRegularHoursSet = <int>{};
       final bookings = <BookingModel>[];
       for (final doc in snapshot.docs) {
         final b = BookingModel.fromFirestore(doc);
         if (b.isCancelled && b.isRegular) {
-          cancelledRegularByHour[b.startTime.hour] = b;
+          cancelledRegularHoursSet.add(b.startTime.hour);
         } else if (!b.isCancelled) {
           bookings.add(b);
         }
       }
-      // Include cancelled-regular entries so they render in the booking list.
-      bookings.addAll(cancelledRegularByHour.values);
 
       // Synthesize virtual entries for active regulars.
-      final realHours = bookings.map((b) => b.startTime.hour).toSet();
-      // cancelledRegularByHour hours are already in realHours via the
-      // entries we just added, so synthesis is naturally blocked for them.
+      // Block hours that have a day-specific cancellation.
+      final realHours = {
+        ...bookings.map((b) => b.startTime.hour),
+        ...cancelledRegularHoursSet,
+      };
       regulars.forEach((hour, reg) {
         if (realHours.contains(hour)) return;
         final start = DateTime(date.year, date.month, date.day, hour);
@@ -1078,14 +1110,51 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
         .where('turfId', isEqualTo: turfId)
         .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(lookbackStart))
         .get();
+
+    // Group all existing materialized-regular docs by slot token so we
+    // can detect and delete duplicates created by concurrent sweep runs.
+    final slotDocs = <String, List<DocumentReference>>{};
     final occupied = <String>{}; // "YYYY-MM-DD@H" tokens
     for (final doc in bookingsSnap.docs) {
       final data = doc.data();
       final dateKey = data['dateKey'] as String?;
       final start = (data['startTime'] as Timestamp?)?.toDate();
       if (dateKey == null || start == null) continue;
-      occupied.add('$dateKey@${start.hour}');
+      final token = '$dateKey@${start.hour}';
+      occupied.add(token);
+      // Track only materialized regular docs (not manual bookings).
+      if (data['isRegular'] as bool? ?? false) {
+        slotDocs.putIfAbsent(token, () => []).add(doc.reference);
+      }
     }
+
+    // Delete duplicate docs — keep the one with the deterministic ID
+    // (mat_{regId}_{dateKey}), or keep the first if none has that ID.
+    final cleanupBatch = _firestore.batch();
+    bool needsCleanup = false;
+    for (final entry in slotDocs.entries) {
+      final refs = entry.value;
+      if (refs.length <= 1) continue;
+      final token = entry.key; // "YYYY-MM-DD@H"
+      final datePart = token.split('@').first;
+      // Find the canonical doc if it exists; otherwise keep the first ref.
+      DocumentReference? keeper;
+      for (final ref in refs) {
+        if (ref.id.startsWith('mat_') && ref.id.endsWith('_$datePart')) {
+          keeper = ref;
+          break;
+        }
+      }
+      keeper ??= refs.first;
+      for (final ref in refs) {
+        if (ref != keeper) {
+          cleanupBatch.delete(ref);
+          needsCleanup = true;
+          debugPrint('🧹 dedup: deleting duplicate materialized regular ${ref.id}');
+        }
+      }
+    }
+    if (needsCleanup) await cleanupBatch.commit();
 
     final batch = _firestore.batch();
     int created = 0;
@@ -1111,7 +1180,10 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
         // same day don't both materialize.
         occupied.add(token);
 
-        final docRef = _firestore.collection(_bookingsCollection).doc();
+        // Deterministic doc ID — concurrent sweep calls hit the same doc
+        // and safely overwrite instead of creating duplicate entries.
+        final docId = 'mat_${reg.id}_$dateKey';
+        final docRef = _firestore.collection(_bookingsCollection).doc(docId);
         batch.set(docRef, {
           'userId': '',
           'userPhone': reg.userPhone,
@@ -1335,19 +1407,42 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
 
   @override
   Future<void> claimFreeGame(String turfId, String phone,
-      {String? bookingId}) async {
+      {String? bookingId, int threshold = 0}) async {
     try {
+      // Determine the cycle boundary. When threshold > 0, set lastClaimedAt
+      // to the timestamp of the threshold-th game so extra games carry
+      // forward into the new cycle. Falls back to serverTimestamp if the
+      // lookup fails (preserves old behaviour).
+      Object lastClaimedAtValue = FieldValue.serverTimestamp();
+      if (threshold > 0) {
+        try {
+          final dates = await getRewardBookingDates(turfId, phone);
+          if (dates.length >= threshold) {
+            // dates is sorted most-recent first → oldest first after reverse.
+            final oldestFirst = dates.reversed.toList();
+            // The threshold-th game is the last one "consumed" by this claim.
+            final boundaryDate = oldestFirst[threshold - 1];
+            lastClaimedAtValue = Timestamp.fromDate(boundaryDate);
+            debugPrint(
+                '🎁 claimFreeGame: carry-forward boundary = $boundaryDate '
+                '(${dates.length - threshold} game(s) carry forward)');
+          }
+        } catch (e) {
+          debugPrint('⚠️ claimFreeGame: carry-forward lookup failed, '
+              'falling back to now: $e');
+        }
+      }
+
       final batch = _firestore.batch();
       // 1) Reward bookkeeping — bump claim counter, stamp lastClaimedAt
-      //    (used as the start of the customer's next reward cycle), and
-      //    reset progressCount for legacy callers.
+      //    (cycle boundary), and reset progressCount for legacy callers.
       batch.set(
           _rewardDoc(turfId, phone),
           {
             'userPhone': phone,
             'progressCount': 0,
             'totalClaimed': FieldValue.increment(1),
-            'lastClaimedAt': FieldValue.serverTimestamp(),
+            'lastClaimedAt': lastClaimedAtValue,
             'lastUpdated': FieldValue.serverTimestamp(),
           },
           SetOptions(merge: true));

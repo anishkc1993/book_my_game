@@ -309,6 +309,7 @@ class ConcessionProvider extends ChangeNotifier {
     required double amount,
     String? notes,
     required String markedBy,
+    DateTime? date,
   }) async {
     // amount can be 0 (e.g., free water complimentary to a booker).
     if (!_hasTurf || quantity <= 0 || amount < 0) return false;
@@ -318,13 +319,14 @@ class ConcessionProvider extends ChangeNotifier {
         itemName: itemName,
         quantity: quantity,
         amount: amount,
-        soldAt: DateTime.now(),
+        soldAt: date ?? DateTime.now(),
         markedBy: markedBy,
         notes: notes,
         turfId: _turfId,
       );
       final saved = await _repository.recordSale(sale);
       _sales = [saved, ..._sales];
+      _ledgerSales = [saved, ..._ledgerSales];
       // Re-aggregate so today's bucket + week total stay consistent.
       _weekBreakdown = _aggregateByDay(_sales);
       _todayTotal = _weekBreakdown.isNotEmpty &&
@@ -432,6 +434,32 @@ class ConcessionProvider extends ChangeNotifier {
   List<ConcessionExpenseEntity> _expenses = const [];
   List<ConcessionExpenseEntity> get expenses => _expenses;
 
+  // Full history for the combined ledger view — all time, no date cap.
+  List<ConcessionSaleEntity> _ledgerSales = const [];
+  List<ConcessionExpenseEntity> _ledgerExpenses = const [];
+  List<ConcessionSaleEntity> get ledgerSales => _ledgerSales;
+  List<ConcessionExpenseEntity> get ledgerExpenses => _ledgerExpenses;
+
+  /// Fetch all-time sales + expenses for the combined ledger page.
+  Future<void> loadLedger() async {
+    if (!_hasTurf) return;
+    try {
+      final results = await Future.wait([
+        _repository.listSales(_turfId!, limit: 5000),
+        _repository.listExpenses(_turfId!, limit: 5000),
+      ]);
+      _ledgerSales = results[0] as List<ConcessionSaleEntity>;
+      _ledgerExpenses = results[1] as List<ConcessionExpenseEntity>;
+      // Also keep _expenses up to date for the totals.
+      _expenses = _ledgerExpenses;
+      await _refreshExpenseTotals();
+      notifyListeners();
+    } catch (e) {
+      _error = e.toString().replaceAll('Exception: ', '');
+      notifyListeners();
+    }
+  }
+
   /// Period totals computed locally from the loaded expenses (last 30
   /// days fetched in [load]). For the rare case of expenses older than
   /// the loaded window, call [sumExpenseBetween] directly.
@@ -487,6 +515,7 @@ class ConcessionProvider extends ChangeNotifier {
     required double amount,
     String? notes,
     required String markedBy,
+    DateTime? date,
   }) async {
     if (!_hasTurf || itemName.isEmpty || quantity <= 0 || amount < 0) {
       return false;
@@ -496,13 +525,14 @@ class ConcessionProvider extends ChangeNotifier {
         itemName: itemName,
         quantity: quantity,
         amount: amount,
-        spentAt: DateTime.now(),
+        spentAt: date ?? DateTime.now(),
         markedBy: markedBy,
         notes: notes,
         turfId: _turfId,
       );
       final saved = await _repository.recordExpense(entity);
       _expenses = [saved, ..._expenses];
+      _ledgerExpenses = [saved, ..._ledgerExpenses];
       await _refreshExpenseTotals();
       _bump();
       notifyListeners();

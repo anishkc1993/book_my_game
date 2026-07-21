@@ -75,7 +75,7 @@ class _ConcessionsPageState extends State<ConcessionsPage> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      builder: (_) => _RecordSaleSheet(preselect: preselect),
+      builder: (_) => ConcessionRecordSaleSheet(preselect: preselect),
     );
   }
 
@@ -87,7 +87,7 @@ class _ConcessionsPageState extends State<ConcessionsPage> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      builder: (_) => _RecordSaleSheet(editing: sale),
+      builder: (_) => ConcessionRecordSaleSheet(editing: sale),
     );
   }
 
@@ -713,24 +713,25 @@ class _Empty extends StatelessWidget {
 
 // ─── Record sale sheet ───────────────────────────────────────────────────────
 
-class _RecordSaleSheet extends StatefulWidget {
+class ConcessionRecordSaleSheet extends StatefulWidget {
   final ConcessionItemEntity? preselect;
   /// If set, the sheet runs in edit mode and updates this sale instead of
   /// recording a new one.
   final ConcessionSaleEntity? editing;
-  const _RecordSaleSheet({this.preselect, this.editing});
+  const ConcessionRecordSaleSheet({super.key, this.preselect, this.editing});
 
   @override
-  State<_RecordSaleSheet> createState() => _RecordSaleSheetState();
+  State<ConcessionRecordSaleSheet> createState() => _RecordSaleSheetState();
 }
 
-class _RecordSaleSheetState extends State<_RecordSaleSheet> {
+class _RecordSaleSheetState extends State<ConcessionRecordSaleSheet> {
   ConcessionItemEntity? _picked;
   late final TextEditingController _qtyCtrl;
   late final TextEditingController _amountCtrl;
   late final TextEditingController _notesCtrl;
   bool _amountTouched = false;
   bool _submitting = false;
+  DateTime _date = DateTime.now();
 
   bool get _isEditing => widget.editing != null;
 
@@ -829,6 +830,7 @@ class _RecordSaleSheetState extends State<_RecordSaleSheet> {
         amount: amount,
         notes: notes,
         markedBy: auth.user?.uid ?? 'admin',
+        date: _date,
       );
     }
     if (!mounted) return;
@@ -986,6 +988,49 @@ class _RecordSaleSheetState extends State<_RecordSaleSheet> {
               maxLines: 1,
               decoration: const InputDecoration(
                 hintText: 'e.g. Cash · paid by Anup',
+              ),
+            ),
+            const SizedBox(height: 16),
+            _Label('Date'),
+            const SizedBox(height: 8),
+            InkWell(
+              onTap: () async {
+                final picked = await showDatePicker(
+                  context: context,
+                  initialDate: _date,
+                  firstDate: DateTime(2024),
+                  lastDate: DateTime.now(),
+                );
+                if (picked != null) setState(() => _date = picked);
+              },
+              borderRadius: BorderRadius.circular(10),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 14, vertical: 13),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerLow,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                      color: Theme.of(context).colorScheme.outlineVariant),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.calendar_today_rounded,
+                        size: 16,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurfaceVariant),
+                    const SizedBox(width: 10),
+                    Text(
+                      _date.year == DateTime.now().year &&
+                              _date.month == DateTime.now().month &&
+                              _date.day == DateTime.now().day
+                          ? 'Today · ${_date.day}/${_date.month}/${_date.year}'
+                          : '${_date.day}/${_date.month}/${_date.year}',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ],
+                ),
               ),
             ),
             const SizedBox(height: 22),

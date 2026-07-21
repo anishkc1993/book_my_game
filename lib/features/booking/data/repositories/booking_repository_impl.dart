@@ -42,8 +42,7 @@ class BookingRepositoryImpl implements BookingRepository {
   }
 
   @override
-  Future<List<BookingEntity>> getBookingsForDate(
-      String turfId, DateTime date) {
+  Future<List<BookingEntity>> getBookingsForDate(String turfId, DateTime date) {
     return _remoteDataSource.getBookingsForDate(turfId, date);
   }
 
@@ -123,6 +122,12 @@ class BookingRepositoryImpl implements BookingRepository {
   }
 
   @override
+  Future<void> restoreRegularForDate(
+      String turfId, BookingEntity cancelledBooking) {
+    return _remoteDataSource.restoreRegularForDate(turfId, cancelledBooking);
+  }
+
+  @override
   Future<RegularBookingEntity> createRegularBooking(
       RegularBookingEntity booking) {
     return _remoteDataSource
@@ -168,9 +173,9 @@ class BookingRepositoryImpl implements BookingRepository {
 
   @override
   Future<void> claimFreeGame(String turfId, String phone,
-      {String? bookingId}) {
+      {String? bookingId, int threshold = 0}) {
     return _remoteDataSource.claimFreeGame(turfId, phone,
-        bookingId: bookingId);
+        bookingId: bookingId, threshold: threshold);
   }
 
   @override

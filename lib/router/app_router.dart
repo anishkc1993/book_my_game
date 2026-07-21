@@ -136,8 +136,24 @@ class AppRouter {
       if (needsTurf && !isOnSelectTurf) {
         return RoutePaths.selectTurf;
       }
-      // Don't block users with a turf from visiting /select-turf — they may
-      // be switching to a different turf.
+
+      // Staff role: block access to revenue/analytics/cafe routes.
+      if (user != null && user.isStaff) {
+        const staffBlocked = [
+          RoutePaths.adminAnalytics,
+          RoutePaths.yearlyRevenue,
+          RoutePaths.hourlyBreakdown,
+          RoutePaths.concessions,
+          RoutePaths.concessionCollections,
+          RoutePaths.concessionHistory,
+          RoutePaths.concessionExpenses,
+          RoutePaths.slotManagement,
+          RoutePaths.moreActions,
+        ];
+        if (staffBlocked.contains(currentPath)) {
+          return RoutePaths.home;
+        }
+      }
     }
 
     return null;

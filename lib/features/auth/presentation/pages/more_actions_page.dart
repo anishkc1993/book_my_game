@@ -29,6 +29,13 @@ class MoreActionsPage extends StatelessWidget {
         route: RoutePaths.concessions,
         iconColor: const Color(0xFF2563EB),
       ),
+      _MoreEntry(
+        icon: Icons.block_outlined,
+        label: 'Block hours',
+        subtitle: 'Enable or disable bookable time slots',
+        route: RoutePaths.slotManagement,
+        iconColor: Colors.orange,
+      ),
     ];
 
     return Scaffold(

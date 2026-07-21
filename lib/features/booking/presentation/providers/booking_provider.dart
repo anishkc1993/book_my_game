@@ -119,11 +119,33 @@ class BookingProvider extends ChangeNotifier {
   String? _slotConfigError;
   String? get slotConfigError => _slotConfigError;
 
-  /// Select a date and fetch available slots
+  /// Select a date, clear stale data immediately, then fetch slots and
+  /// bookings in parallel with a single atomic state update at the end.
+  /// Clearing prevents stale data from a previous date showing while the
+  /// new date is loading — the list shows empty+spinner until both arrive.
   Future<void> selectDate(DateTime date) async {
+    if (!_hasTurf) return;
     _selectedDate = DateTime(date.year, date.month, date.day);
     _selectedSlot = null;
-    await fetchSlotsForSelectedDate();
+    _dateBookings = [];
+    _slots = [];
+    _state = BookingState.loading;
+    _errorMessage = null;
+    notifyListeners();
+
+    try {
+      final results = await Future.wait([
+        _repository.getSlotsForDate(_turfId!, _selectedDate),
+        _repository.getBookingsForDate(_turfId!, _selectedDate),
+      ]);
+      _slots = (results[0] as List).cast<SlotEntity>();
+      _dateBookings = (results[1] as List).cast<BookingEntity>();
+      _state = BookingState.loaded;
+    } catch (e) {
+      _errorMessage = e.toString().replaceAll('Exception: ', '');
+      _state = BookingState.error;
+    }
+    notifyListeners();
   }
 
   /// Fetch slots for the selected date.
@@ -665,11 +687,37 @@ class BookingProvider extends ChangeNotifier {
     if (!_hasTurf) return false;
     try {
       await _repository.cancelRegularForDate(_turfId!, regular, date);
-      await Future.wait([
-        fetchBookingsForSelectedDate(),
-        fetchSlotsForSelectedDate(),
-        fetchTodayBookings(),
-      ]);
+
+      // Optimistic update: remove the regular from the list immediately —
+      // cancelled regulars are hidden (slot shows as available for walk-ins).
+      _dateBookings = _dateBookings
+          .where((b) => !(b.isRegular &&
+              !b.isCancelled &&
+              b.startTime.hour == regular.startTime.hour))
+          .toList();
+      _state = BookingState.loaded;
+      notifyListeners();
+
+      // Background refresh for full consistency — normal fetch (no
+      // forceServer) so a network hiccup doesn't wipe the optimistic state.
+      await fetchSlotsForSelectedDate();
+      _bumpMutation();
+      return true;
+    } catch (e) {
+      _regularsError = e.toString().replaceAll('Exception: ', '');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Undo a day-specific cancellation — restores the regular so it
+  /// synthesizes again for that date.
+  Future<bool> restoreRegularForDate(BookingEntity cancelledBooking) async {
+    if (!_hasTurf) return false;
+    try {
+      await _repository.restoreRegularForDate(_turfId!, cancelledBooking);
+      // Re-fetch the date so the regular re-synthesizes naturally.
+      await selectDate(_selectedDate);
       _bumpMutation();
       return true;
     } catch (e) {
@@ -925,7 +973,7 @@ class BookingProvider extends ChangeNotifier {
     if (!_hasTurf) return false;
     try {
       await _repository.claimFreeGame(_turfId!, phone,
-          bookingId: bookingId);
+          bookingId: bookingId, threshold: freeGameThreshold);
       // Refresh local view.
       _rewardsByPhone = {
         ..._rewardsByPhone,

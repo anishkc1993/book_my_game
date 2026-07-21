@@ -36,21 +36,22 @@ class _HomePageState extends State<HomePage> {
       final user = auth.user;
       if (user != null) {
         context.read<BookingProvider>().fetchUserBookings(user.uid);
-        if (user.isAdmin) {
+        if (user.isAdminOrStaff) {
           final bp = context.read<BookingProvider>();
-          // Sweep first so today's list reflects the auto-completion.
           bp.sweepPastBookings().then((_) {
             bp.fetchTodayBookings();
-            bp.fetchAllRewards();
-            // Sweep may have flipped CONFIRMED → COMPLETED, which the
-            // leaderboard now counts — force a fresh calc.
-            context
-                .read<LeaderboardProvider>()
-                .fetchLeaderboard(forceRefresh: true);
+            if (user.isAdmin) {
+              bp.fetchAllRewards();
+              context
+                  .read<LeaderboardProvider>()
+                  .fetchLeaderboard(forceRefresh: true);
+            }
           });
           bp.fetchSlotConfig();
           context.read<LeaderboardProvider>().fetchLeaderboard();
-          context.read<MonthlyPlanProvider>().fetchTodayPlanRevenue();
+          if (user.isAdmin) {
+            context.read<MonthlyPlanProvider>().fetchTodayPlanRevenue();
+          }
         }
       }
     });
@@ -70,7 +71,7 @@ class _HomePageState extends State<HomePage> {
       child: Consumer<AuthProvider>(
         builder: (context, auth, _) {
           final user = auth.user;
-          if (user?.isAdmin == true) {
+          if (user?.isAdminOrStaff == true) {
             return _AdminHome(onSignOut: () => _signOut(context));
           }
           return _CustomerHome(onSignOut: () => _signOut(context));
@@ -227,6 +228,8 @@ class _AdminHomeState extends State<_AdminHome> {
           builder: (context, bp, _) {
             final today = DateTime.now();
             final liveBookings = bp.todayBookings;
+            final isStaff =
+                context.watch<AuthProvider>().user?.isStaff == true;
 
             // Revenue split — paid revenue is recognized only after the
             // match has actually played (advance payments are deferred).
@@ -371,71 +374,73 @@ class _AdminHomeState extends State<_AdminHome> {
                   ),
                 ),
 
-                // ── Revenue + Bookings row ─────────────────────────────────
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
-                    child: SizedBox(
-                      height: 152,
+                // ── Revenue + Bookings row (admin only) ───────────────────
+                if (!isStaff)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+                      child: SizedBox(
+                        height: 152,
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Expanded(
+                              flex: 3,
+                              child: _RevenueCard(
+                                amount: paidRevenue,
+                                delta: null,
+                                hidden: _revenueHidden,
+                                onToggleVisibility: _toggleRevenue,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              flex: 2,
+                              child: _BookingsCard(
+                                booked: bookedCount,
+                                total: totalEnabled,
+                                fillPercent: fillPercent,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // ── Stat tiles row (admin only) ────────────────────────────
+                if (!isStaff)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
                       child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           Expanded(
-                            flex: 3,
-                            child: _RevenueCard(
-                              amount: paidRevenue,
-                              delta: null,
-                              hidden: _revenueHidden,
-                              onToggleVisibility: _toggleRevenue,
+                            child: _StatPill(
+                              icon: Icons.verified_outlined,
+                              iconColor: AppColors.brandGreen,
+                              iconBg: AppColors.brandGreen
+                                  .withValues(alpha: 0.18),
+                              value: _revenueHidden
+                                  ? 'Rs. ••••'
+                                  : 'Rs. ${paidRevenue.toInt()}',
+                              label: 'PAID',
                             ),
                           ),
-                          const SizedBox(width: 10),
+                          const SizedBox(width: 8),
                           Expanded(
-                            flex: 2,
-                            child: _BookingsCard(
-                              booked: bookedCount,
-                              total: totalEnabled,
-                              fillPercent: fillPercent,
+                            child: _StatPill(
+                              icon: Icons.group_outlined,
+                              iconColor: cs.onSurfaceVariant,
+                              iconBg: cs.surfaceContainerHighest,
+                              value: '$walkInsCount',
+                              label: 'BOOKINGS',
                             ),
                           ),
                         ],
                       ),
                     ),
                   ),
-                ),
-
-                // ── Stat tiles row (Paid / Pending / Walk-ins) ─────────────
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: _StatPill(
-                            icon: Icons.verified_outlined,
-                            iconColor: AppColors.brandGreen,
-                            iconBg: AppColors.brandGreen
-                                .withValues(alpha: 0.18),
-                            value: _revenueHidden
-                                ? 'Rs. ••••'
-                                : 'Rs. ${paidRevenue.toInt()}',
-                            label: 'PAID',
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: _StatPill(
-                            icon: Icons.group_outlined,
-                            iconColor: cs.onSurfaceVariant,
-                            iconBg: cs.surfaceContainerHighest,
-                            value: '$walkInsCount',
-                            label: 'BOOKINGS',
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
 
                 // ── Today's pitch slot visualization ───────────────────────
                 SliverToBoxAdapter(
@@ -555,19 +560,28 @@ class _AdminHomeState extends State<_AdminHome> {
                                     context.push(RoutePaths.monthlyPlans),
                               ),
                               const SizedBox(width: 10),
-                              _PitchActionTile(
-                                icon: Icons.block_outlined,
-                                label: 'Block hours',
-                                onTap: () =>
-                                    context.push(RoutePaths.slotManagement),
-                              ),
-                              const SizedBox(width: 10),
-                              _PitchActionTile(
-                                icon: Icons.bar_chart_rounded,
-                                label: 'Reports',
-                                onTap: () =>
-                                    context.push(RoutePaths.adminAnalytics),
-                              ),
+                              if (isStaff) ...[
+                                _PitchActionTile(
+                                  icon: Icons.leaderboard_outlined,
+                                  label: 'Leaderboard',
+                                  onTap: () =>
+                                      context.push(RoutePaths.leaderboard),
+                                ),
+                              ] else ...[
+                                _PitchActionTile(
+                                  icon: Icons.local_cafe_outlined,
+                                  label: 'Cafe',
+                                  onTap: () =>
+                                      context.push(RoutePaths.concessions),
+                                ),
+                                const SizedBox(width: 10),
+                                _PitchActionTile(
+                                  icon: Icons.bar_chart_rounded,
+                                  label: 'Reports',
+                                  onTap: () =>
+                                      context.push(RoutePaths.adminAnalytics),
+                                ),
+                              ],
                             ],
                           ),
                         ),

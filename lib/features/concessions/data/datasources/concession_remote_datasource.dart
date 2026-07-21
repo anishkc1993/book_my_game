@@ -143,14 +143,14 @@ class ConcessionRemoteDataSourceImpl implements ConcessionRemoteDataSource {
         throw const ServerException('Missing turf for sale');
       }
       final ref = await _salesCol(sale.turfId!)
-          .add(sale.toFirestore(includeServerTimestamp: true));
+          .add(sale.toFirestore(includeServerTimestamp: false));
       return ConcessionSaleModel(
         id: ref.id,
         itemId: sale.itemId,
         itemName: sale.itemName,
         quantity: sale.quantity,
         amount: sale.amount,
-        soldAt: DateTime.now(),
+        soldAt: sale.soldAt,
         markedBy: sale.markedBy,
         notes: sale.notes,
         turfId: sale.turfId,
@@ -273,13 +273,13 @@ class ConcessionRemoteDataSourceImpl implements ConcessionRemoteDataSource {
         throw const ServerException('Missing turf for expense');
       }
       final ref = await _expensesCol(expense.turfId!)
-          .add(expense.toFirestore(includeServerTimestamp: true));
+          .add(expense.toFirestore(includeServerTimestamp: false));
       return ConcessionExpenseModel(
         id: ref.id,
         itemName: expense.itemName,
         quantity: expense.quantity,
         amount: expense.amount,
-        spentAt: DateTime.now(),
+        spentAt: expense.spentAt,
         markedBy: expense.markedBy,
         notes: expense.notes,
         turfId: expense.turfId,

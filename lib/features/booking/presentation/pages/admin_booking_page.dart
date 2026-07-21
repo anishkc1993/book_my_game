@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/utils/validators.dart';
@@ -26,8 +27,7 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final provider = context.read<BookingProvider>();
       provider.fetchSlotConfig();
-      provider.selectDate(DateTime.now());
-      provider.fetchBookingsForSelectedDate();
+      provider.selectDate(DateTime.now()); // fetches both slots + bookings
       provider.fetchAllRewards();
     });
   }
@@ -41,6 +41,8 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
       body: Consumer<BookingProvider>(
         builder: (context, bookingProvider, _) {
           final bookings = bookingProvider.dateBookings;
+          final isStaff =
+              context.watch<AuthProvider>().user?.isStaff == true;
           final activeCount =
               bookings.where((b) => b.isPending || b.isConfirmed).length;
           final paidCount = bookings.where((b) => b.isPaid).length;
@@ -106,7 +108,6 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
                     selectedDate: bookingProvider.selectedDate,
                     onDateSelected: (date) {
                       bookingProvider.selectDate(date);
-                      bookingProvider.fetchBookingsForSelectedDate();
                     },
                   ),
                 ),
@@ -233,16 +234,20 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
                         padding: const EdgeInsets.only(bottom: 12),
                         child: _BookingCard(
                           booking: booking,
-                          onMarkPaid: () => _markAsPaid(booking),
-                          onCancel: () => _cancelBooking(booking),
-                          onEditDetails: () => _editDetails(booking),
-                          freeGameEligible: eligible,
-                          onClaimFreeGame: eligible
+                          onMarkPaid: isStaff ? null : () => _markAsPaid(booking),
+                          onCancel: isStaff ? null : () => _cancelBooking(booking),
+                          onEditDetails: isStaff ? null : () => _editDetails(booking),
+                          freeGameEligible: !isStaff && eligible,
+                          onClaimFreeGame: !isStaff && eligible
                               ? () => _claimFreeGame(booking)
                               : null,
-                          onCancelForDay: booking.isRegular && !booking.isCancelled
+                          onCancelForDay: !isStaff && booking.isRegular && !booking.isCancelled
                               ? () => _cancelRegularForDay(booking)
                               : null,
+                          onRestoreForDay: !isStaff && booking.isRegular && booking.isCancelled
+                              ? () => _restoreRegularForDay(booking)
+                              : null,
+                          hideAmount: isStaff,
                         ),
                       );
                     },
@@ -407,6 +412,20 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content:
           Text(ok ? 'Free game claimed' : 'Failed to claim free game'),
+      backgroundColor: ok ? AppColors.brandGreen : cs.error,
+      behavior: SnackBarBehavior.floating,
+      margin: const EdgeInsets.all(16),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    ));
+  }
+
+  Future<void> _restoreRegularForDay(BookingEntity booking) async {
+    final bookingProvider = context.read<BookingProvider>();
+    final cs = Theme.of(context).colorScheme;
+    final ok = await bookingProvider.restoreRegularForDate(booking);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ok ? 'Regular booking restored' : 'Failed to restore'),
       backgroundColor: ok ? AppColors.brandGreen : cs.error,
       behavior: SnackBarBehavior.floating,
       margin: const EdgeInsets.all(16),
@@ -1246,12 +1265,14 @@ String _getInitials(String name) {
 
 class _BookingCard extends StatelessWidget {
   final BookingEntity booking;
-  final VoidCallback onMarkPaid;
-  final VoidCallback onCancel;
-  final VoidCallback onEditDetails;
+  final VoidCallback? onMarkPaid;
+  final VoidCallback? onCancel;
+  final VoidCallback? onEditDetails;
   final bool freeGameEligible;
   final VoidCallback? onClaimFreeGame;
   final VoidCallback? onCancelForDay;
+  final VoidCallback? onRestoreForDay;
+  final bool hideAmount;
 
   const _BookingCard({
     required this.booking,
@@ -1261,6 +1282,8 @@ class _BookingCard extends StatelessWidget {
     this.freeGameEligible = false,
     this.onClaimFreeGame,
     this.onCancelForDay,
+    this.onRestoreForDay,
+    this.hideAmount = false,
   });
 
   @override
@@ -1396,24 +1419,48 @@ class _BookingCard extends StatelessWidget {
                         displayName,
                         style: theme.textTheme.bodyMedium?.copyWith(
                           fontWeight: FontWeight.w700,
-                          decoration:
-                              isCancelled ? TextDecoration.lineThrough : null,
+                          decoration: isCancelled
+                              ? TextDecoration.lineThrough
+                              : null,
                         ),
                         overflow: TextOverflow.ellipsis,
                       ),
-                      Text(
-                        booking.userPhone,
-                        style: theme.textTheme.bodySmall
-                            ?.copyWith(color: cs.onSurfaceVariant),
+                      // Call icon + phone number — tap to dial.
+                      GestureDetector(
+                        onTap: booking.userPhone.isNotEmpty
+                            ? () async {
+                                final raw = booking.userPhone
+                                    .replaceAll(RegExp(r'\s'), '');
+                                final uri = Uri.parse('tel:$raw');
+                                if (await canLaunchUrl(uri)) {
+                                  await launchUrl(uri);
+                                }
+                              }
+                            : null,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.call_rounded,
+                              size: 13,
+                              color: AppColors.brandGreen
+                                  .withValues(alpha: 0.85),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              booking.userPhone,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: cs.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
                 ),
-                if (!booking.isMonthlyPlan && !booking.isTournament)
+                if (!booking.isMonthlyPlan && !booking.isTournament && !hideAmount)
                   Builder(builder: (ctx) {
-                    // Live-recompute for unpaid bookings so band/price
-                    // changes in slot management flow through. Paid rows
-                    // continue to show the historical amountPaid.
                     final price =
                         ctx.watch<BookingProvider>().displayPriceFor(booking);
                     if (price == null) return const SizedBox.shrink();
@@ -1429,7 +1476,8 @@ class _BookingCard extends StatelessWidget {
             ),
           ),
 
-          if (isActive &&
+          if (!hideAmount &&
+              isActive &&
               !booking.isMonthlyPlan &&
               !booking.isTournament) ...[
             Divider(height: 1, color: cs.outlineVariant.withValues(alpha: 0.5)),
@@ -1539,8 +1587,9 @@ class _BookingCard extends StatelessWidget {
                     constraints:
                         const BoxConstraints(minWidth: 32, minHeight: 32),
                     onSelected: (value) {
-                      if (value == 'edit_details') onEditDetails();
+                      if (value == 'edit_details') onEditDetails?.call();
                       if (value == 'cancel_day') onCancelForDay?.call();
+                      if (value == 'restore_day') onRestoreForDay?.call();
                     },
                     itemBuilder: (_) => [
                       if (!booking.isRegular)
