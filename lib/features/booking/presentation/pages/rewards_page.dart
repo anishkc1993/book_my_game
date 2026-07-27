@@ -212,7 +212,6 @@ class _RewardsPageState extends State<RewardsPage> {
               );
             }).toList();
 
-            // Filter by search.
             final q = _query.toLowerCase();
             final filtered = q.isEmpty
                 ? all
@@ -361,22 +360,37 @@ class _RewardsPageState extends State<RewardsPage> {
                       ),
                     ),
 
-                  // Search.
+                  // Search — matches leaderboard implementation exactly.
                   SliverToBoxAdapter(
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
                       child: TextField(
                         controller: _searchCtrl,
                         onChanged: (v) => setState(() => _query = v.trim()),
+                        keyboardType: TextInputType.text,
                         decoration: InputDecoration(
                           hintText: 'Search by name or number',
                           prefixIcon:
                               const Icon(Icons.search_rounded, size: 20),
+                          suffixIcon: _query.isEmpty
+                              ? null
+                              : IconButton(
+                                  icon: const Icon(Icons.clear_rounded,
+                                      size: 18),
+                                  onPressed: () {
+                                    _searchCtrl.clear();
+                                    setState(() => _query = '');
+                                  },
+                                ),
                           filled: true,
                           fillColor: cs.surfaceContainerLow,
                           contentPadding: const EdgeInsets.symmetric(
                               horizontal: 12, vertical: 0),
                           border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(color: cs.outlineVariant),
+                          ),
+                          enabledBorder: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(12),
                             borderSide: BorderSide(color: cs.outlineVariant),
                           ),
