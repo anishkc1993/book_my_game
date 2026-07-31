@@ -11,6 +11,7 @@ import '../../../tournaments/presentation/widgets/tournaments_tab.dart';
 import '../../domain/entities/regular_booking_entity.dart';
 import '../../domain/entities/slot_config_entity.dart';
 import '../providers/booking_provider.dart';
+import 'admin_booking_page.dart' show PastCustomersSheet;
 
 class RegularBookingsPage extends StatefulWidget {
   const RegularBookingsPage({super.key});
@@ -537,6 +538,7 @@ class _AddRegularBookingSheetState extends State<_AddRegularBookingSheet> {
   late final Set<int> _selectedDays;
   int? _selectedHour;
   DateTime _startDate = DateTime.now();
+  Future<List<({String name, String phone})>>? _customersFuture;
   String? _nameError;
   String? _phoneError;
   bool _submitting = false;
@@ -549,6 +551,9 @@ class _AddRegularBookingSheetState extends State<_AddRegularBookingSheet> {
   @override
   void initState() {
     super.initState();
+    // Pre-warm past-customers cache for instant picker response.
+    _customersFuture =
+        context.read<BookingProvider>().recentCustomers();
     final e = widget.existing;
     _nameCtrl = TextEditingController(text: e?.customerName ?? '');
     // Strip the country code prefix for the input — saved with +977 when new.
@@ -568,6 +573,48 @@ class _AddRegularBookingSheetState extends State<_AddRegularBookingSheet> {
     // When editing, the stored price is the source of truth — treat it as
     // already overridden so it doesn't get auto-rewritten on first build.
     _priceTouched = _isEdit;
+  }
+
+  Future<void> _pickPastCustomer() async {
+    List<({String name, String phone})> suggestions;
+    try {
+      suggestions = await (_customersFuture ??
+          context.read<BookingProvider>().recentCustomers());
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Could not load past customers: $e'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    if (!mounted) return;
+    if (suggestions.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No past customers yet'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    final picked = await showModalBottomSheet<({String name, String phone})>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (_) => PastCustomersSheet(customers: suggestions),
+    );
+    if (picked == null || !mounted) return;
+    final stripped = picked.phone.startsWith('+977')
+        ? picked.phone.substring(4)
+        : picked.phone;
+    setState(() {
+      _nameCtrl.text = picked.name;
+      _phoneCtrl.text = stripped;
+      _nameError = null;
+      _phoneError = null;
+    });
   }
 
   /// Auto-populate the price field from slot config when admin hasn't
@@ -752,8 +799,24 @@ class _AddRegularBookingSheetState extends State<_AddRegularBookingSheet> {
               ],
             ),
             const SizedBox(height: 18),
-            // Customer name
-            const _FieldLabel(label: 'Customer name'),
+            // Customer — pick from past or type manually
+            Row(
+              children: [
+                const Expanded(child: _FieldLabel(label: 'Customer')),
+                TextButton.icon(
+                  onPressed: _pickPastCustomer,
+                  icon: const Icon(Icons.contacts_outlined, size: 16),
+                  label: const Text('Pick past customer'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.brandGreen,
+                    textStyle: const TextStyle(
+                        fontSize: 12, fontWeight: FontWeight.w700),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 4),
+                  ),
+                ),
+              ],
+            ),
             const SizedBox(height: 8),
             TextField(
               controller: _nameCtrl,

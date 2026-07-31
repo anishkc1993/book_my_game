@@ -2,11 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/utils/validators.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
+import '../../../concessions/presentation/providers/concession_provider.dart';
+import '../../../monthly_plans/presentation/providers/monthly_plan_provider.dart';
 import '../../domain/entities/booking_entity.dart';
 import '../../domain/entities/regular_booking_entity.dart';
 import '../../domain/entities/slot_entity.dart';
@@ -21,6 +24,31 @@ class AdminBookingPage extends StatefulWidget {
 }
 
 class _AdminBookingPageState extends State<AdminBookingPage> {
+  Future<void> _showDailySummary() async {
+    final bp = context.read<BookingProvider>();
+    final mp = context.read<MonthlyPlanProvider>();
+    final cp = context.read<ConcessionProvider>();
+    final turfName =
+        context.read<AuthProvider>().user?.turfName ?? 'Turf';
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (_) => _DailySummarySheet(
+        turfName: turfName,
+        bookings: bp.dateBookings,
+        selectedDate: bp.selectedDate,
+        groundRevenue: bp.todayPaidRevenue,
+        planRevenue: mp.todayPlanRevenue,
+        cafeRevenue: cp.todayTotal,
+        cafeExpense: cp.todayExpense,
+      ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -81,6 +109,21 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
                             ),
                           ),
                         ),
+                        if (!isStaff)
+                          GestureDetector(
+                            onTap: _showDailySummary,
+                            child: Container(
+                              padding: const EdgeInsets.all(9),
+                              margin: const EdgeInsets.only(right: 8),
+                              decoration: BoxDecoration(
+                                color: cs.surfaceContainerLow,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: cs.outlineVariant),
+                              ),
+                              child: Icon(Icons.summarize_outlined,
+                                  size: 18, color: cs.onSurface),
+                            ),
+                          ),
                         GestureDetector(
                           onTap: () => _showCreateBookingSheet(context),
                           child: Container(
@@ -676,7 +719,7 @@ class _NewBookingSheetState extends State<_NewBookingSheet> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
       ),
-      builder: (_) => _PastCustomersSheet(customers: suggestions),
+      builder: (_) => PastCustomersSheet(customers: suggestions),
     );
     if (picked == null || !mounted) return;
     // Strip the +977 prefix — the phone field stores plain 10 digits.
@@ -1797,15 +1840,15 @@ class _MarkAsPaidDialogState extends State<_MarkAsPaidDialog> {
 
 // ─── Past Customers picker sheet ─────────────────────────────────────────────
 
-class _PastCustomersSheet extends StatefulWidget {
+class PastCustomersSheet extends StatefulWidget {
   final List<({String name, String phone})> customers;
-  const _PastCustomersSheet({required this.customers});
+  const PastCustomersSheet({super.key, required this.customers});
 
   @override
-  State<_PastCustomersSheet> createState() => _PastCustomersSheetState();
+  State<PastCustomersSheet> createState() => _PastCustomersSheetState();
 }
 
-class _PastCustomersSheetState extends State<_PastCustomersSheet> {
+class _PastCustomersSheetState extends State<PastCustomersSheet> {
   final TextEditingController _searchCtrl = TextEditingController();
   String _query = '';
 
@@ -1995,7 +2038,7 @@ class _EditCustomerDialogState extends State<_EditCustomerDialog> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
       ),
-      builder: (_) => _PastCustomersSheet(customers: suggestions),
+      builder: (_) => PastCustomersSheet(customers: suggestions),
     );
     if (picked == null || !mounted) return;
     setState(() {
@@ -2080,6 +2123,352 @@ class _EditCustomerDialogState extends State<_EditCustomerDialog> {
           child: const Text('Save'),
         ),
       ],
+    );
+  }
+}
+
+// ── Daily summary sheet ───────────────────────────────────────────────────────
+
+class _DailySummarySheet extends StatelessWidget {
+  final String turfName;
+  final List<BookingEntity> bookings;
+  final DateTime selectedDate;
+  final double groundRevenue;
+  final double planRevenue;
+  final double cafeRevenue;
+  final double cafeExpense;
+
+  const _DailySummarySheet({
+    required this.turfName,
+    required this.bookings,
+    required this.selectedDate,
+    required this.groundRevenue,
+    required this.planRevenue,
+    required this.cafeRevenue,
+    required this.cafeExpense,
+  });
+
+  static const _days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  static const _months = ['Jan','Feb','Mar','Apr','May','Jun',
+                           'Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  String _fmtHour(int h) {
+    if (h == 0) return '12 AM';
+    if (h < 12) return '$h AM';
+    if (h == 12) return '12 PM';
+    return '${h - 12} PM';
+  }
+
+  String _dateStr(DateTime d) =>
+      '${_days[d.weekday - 1]}, ${d.day} ${_months[d.month - 1]} ${d.year}';
+
+  bool get _isToday {
+    final now = DateTime.now();
+    return selectedDate.year == now.year &&
+        selectedDate.month == now.month &&
+        selectedDate.day == now.day;
+  }
+
+  String _buildSummaryText() {
+    final active = bookings
+        .where((b) => !b.isCancelled && !b.isMonthlyPlan && !b.isTournament)
+        .toList()
+      ..sort((a, b) => a.startTime.compareTo(b.startTime));
+
+    final buf = StringBuffer();
+    buf.writeln('📋 *Daily Summary — $turfName*');
+    buf.writeln('📅 ${_dateStr(selectedDate)}');
+    buf.writeln();
+    buf.writeln('⚽ *Bookings (${active.length})*');
+    for (final b in active) {
+      final name = b.customerName?.isNotEmpty == true
+          ? b.customerName! : b.userPhone;
+      final slot = '${_fmtHour(b.startTime.hour)}–${_fmtHour(b.endTime.hour)}';
+      buf.writeln('  • $slot — $name${b.isRegular ? ' [Regular]' : ''}');
+    }
+    if (_isToday) {
+      final totalGround = groundRevenue + planRevenue;
+      final grandTotal = totalGround + cafeRevenue;
+      buf.writeln();
+      buf.writeln('💰 *Revenue*');
+      buf.writeln('  Ground: Rs. ${totalGround.toInt()}');
+      buf.writeln('  Cafe: Rs. ${cafeRevenue.toInt()}');
+      if (cafeExpense > 0) {
+        buf.writeln('  Cafe expenses: −Rs. ${cafeExpense.toInt()}');
+      }
+      buf.writeln('  ──────────────');
+      buf.writeln('  *Total: Rs. ${grandTotal.toInt()}*');
+    }
+    return buf.toString().trim();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    final active = bookings
+        .where((b) => !b.isCancelled && !b.isMonthlyPlan && !b.isTournament)
+        .toList()
+      ..sort((a, b) => a.startTime.compareTo(b.startTime));
+
+    final totalGround = groundRevenue + planRevenue;
+    final cafeNet = cafeRevenue - cafeExpense;
+    final grandTotal = totalGround + cafeRevenue;
+    final summaryText = _buildSummaryText();
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 14, 20, 28),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40, height: 4,
+                decoration: BoxDecoration(
+                  color: cs.outlineVariant,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Daily Summary',
+                          style: theme.textTheme.titleLarge
+                              ?.copyWith(fontWeight: FontWeight.w800)),
+                      Text(_dateStr(selectedDate),
+                          style: theme.textTheme.bodyMedium
+                              ?.copyWith(color: cs.onSurfaceVariant)),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: AppColors.brandGreen.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    '${active.length} booking${active.length == 1 ? '' : 's'}',
+                    style: const TextStyle(
+                      color: AppColors.brandGreen,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+
+            // Revenue cards — only meaningful for today
+            if (_isToday) ...[
+              Row(
+                children: [
+                  _SummaryRevCard(label: 'Ground',
+                      amount: totalGround.toInt(),
+                      color: AppColors.brandGreen),
+                  const SizedBox(width: 8),
+                  _SummaryRevCard(label: 'Cafe',
+                      amount: cafeRevenue.toInt(),
+                      color: const Color(0xFF2563EB)),
+                  const SizedBox(width: 8),
+                  _SummaryRevCard(label: 'Total',
+                      amount: grandTotal.toInt(),
+                      color: AppColors.brandGreen,
+                      bold: true),
+                ],
+              ),
+              if (cafeExpense > 0) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: cs.surfaceContainerLow,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: cs.outlineVariant),
+                  ),
+                  child: Row(
+                    children: [
+                      Text('Cafe expenses: −Rs. ${cafeExpense.toInt()}',
+                          style: theme.textTheme.bodySmall
+                              ?.copyWith(color: const Color(0xFFE05757))),
+                      const Spacer(),
+                      Text('Net: Rs. ${cafeNet.toInt()}',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              color: cafeNet >= 0
+                                  ? AppColors.brandGreen
+                                  : const Color(0xFFE05757))),
+                    ],
+                  ),
+                ),
+              ],
+              const SizedBox(height: 20),
+            ],
+
+            // Bookings list
+            Text('Bookings',
+                style: theme.textTheme.titleSmall
+                    ?.copyWith(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 8),
+            if (active.isEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text('No bookings for this date',
+                    style: theme.textTheme.bodyMedium
+                        ?.copyWith(color: cs.onSurfaceVariant)),
+              )
+            else
+              ...active.map((b) {
+                final name = b.customerName?.isNotEmpty == true
+                    ? b.customerName! : b.userPhone;
+                final slot =
+                    '${_fmtHour(b.startTime.hour)} – ${_fmtHour(b.endTime.hour)}';
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 88,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: AppColors.brandGreen.withValues(alpha: 0.10),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(slot,
+                            style: const TextStyle(
+                                color: AppColors.brandGreen,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 11)),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(name,
+                            style: theme.textTheme.bodyMedium
+                                ?.copyWith(fontWeight: FontWeight.w500),
+                            overflow: TextOverflow.ellipsis),
+                      ),
+                      if (b.isRegular)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: cs.surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text('Regular',
+                              style: TextStyle(
+                                  fontSize: 10,
+                                  color: cs.onSurfaceVariant,
+                                  fontWeight: FontWeight.w600)),
+                        ),
+                    ],
+                  ),
+                );
+              }),
+
+            const SizedBox(height: 24),
+
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      await Clipboard.setData(
+                          ClipboardData(text: summaryText));
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Summary copied'),
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.copy_rounded, size: 18),
+                    label: const Text('Copy'),
+                    style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(0, 46)),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: () async {
+                      await Share.share(summaryText,
+                          subject: 'Daily Summary — $turfName');
+                    },
+                    icon: const Icon(Icons.share_rounded, size: 18),
+                    label: const Text('Share'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppColors.brandGreen,
+                      minimumSize: const Size(0, 46),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SummaryRevCard extends StatelessWidget {
+  final String label;
+  final int amount;
+  final Color color;
+  final bool bold;
+  const _SummaryRevCard({
+    required this.label,
+    required this.amount,
+    required this.color,
+    this.bold = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+        decoration: BoxDecoration(
+          color: bold ? color.withValues(alpha: 0.10) : cs.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: bold ? color.withValues(alpha: 0.4) : cs.outlineVariant,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label,
+                style: TextStyle(
+                  color: cs.onSurfaceVariant,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.5,
+                )),
+            const SizedBox(height: 3),
+            Text('Rs. $amount',
+                style: TextStyle(
+                  color: color,
+                  fontSize: bold ? 15 : 13,
+                  fontWeight: FontWeight.w800,
+                )),
+          ],
+        ),
+      ),
     );
   }
 }
