@@ -7,6 +7,9 @@ import '../../../../core/constants/app_constants.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/utils/validators.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
+import '../../../booking/presentation/pages/admin_booking_page.dart'
+    show PastCustomersSheet;
+import '../../../booking/presentation/providers/booking_provider.dart';
 import '../../domain/entities/monthly_plan_entity.dart';
 import '../providers/monthly_plan_provider.dart';
 
@@ -633,12 +636,15 @@ class _PlanEditorSheetState extends State<_PlanEditorSheet> {
   String? _nameError;
   String? _phoneError;
   bool _submitting = false;
+  Future<List<({String name, String phone})>>? _customersFuture;
 
   bool get _isEdit => widget.existing != null;
 
   @override
   void initState() {
     super.initState();
+    _customersFuture =
+        context.read<BookingProvider>().recentCustomers();
     final e = widget.existing;
     _nameCtrl = TextEditingController(text: e?.customerName ?? '');
     final phoneStripped = e?.userPhone
@@ -664,6 +670,48 @@ class _PlanEditorSheetState extends State<_PlanEditorSheet> {
     _feeCtrl.dispose();
     _notesCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _pickPastCustomer() async {
+    List<({String name, String phone})> suggestions;
+    try {
+      suggestions = await (_customersFuture ??
+          context.read<BookingProvider>().recentCustomers());
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Could not load past customers: $e'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    if (!mounted) return;
+    if (suggestions.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No past customers yet'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    final picked = await showModalBottomSheet<({String name, String phone})>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (_) => PastCustomersSheet(customers: suggestions),
+    );
+    if (picked == null || !mounted) return;
+    final stripped = picked.phone.startsWith('+977')
+        ? picked.phone.substring(4)
+        : picked.phone;
+    setState(() {
+      _nameCtrl.text = picked.name;
+      _phoneCtrl.text = stripped;
+      _nameError = null;
+      _phoneError = null;
+    });
   }
 
   bool get _canSave {
@@ -816,7 +864,23 @@ class _PlanEditorSheetState extends State<_PlanEditorSheet> {
               ],
             ),
             const SizedBox(height: 18),
-            const _Label('Customer name'),
+            Row(
+              children: [
+                const Expanded(child: _Label('Customer name')),
+                TextButton.icon(
+                  onPressed: _pickPastCustomer,
+                  icon: const Icon(Icons.contacts_outlined, size: 16),
+                  label: const Text('Pick past customer'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.brandGreen,
+                    textStyle: const TextStyle(
+                        fontSize: 12, fontWeight: FontWeight.w700),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 4),
+                  ),
+                ),
+              ],
+            ),
             const SizedBox(height: 8),
             TextField(
               controller: _nameCtrl,
