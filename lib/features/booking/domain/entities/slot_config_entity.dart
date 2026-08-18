@@ -39,6 +39,9 @@ class SlotConfigEntity extends Equatable {
   /// Flat price for any hour booked on Saturday or Sunday. Overrides the
   /// time-of-day brackets above on weekend days.
   final double weekendPrice;
+  /// Flat price for any hour booked on a marked holiday date. Overrides
+  /// all other pricing tiers including weekend.
+  final double holidayPrice;
   /// First hour (0-23) that counts as "Day" — anything before is "Morning".
   /// Defaults to 10 (10 AM), matching the legacy hard-coded behavior.
   final int dayStartHour;
@@ -57,6 +60,7 @@ class SlotConfigEntity extends Equatable {
     this.dayPrice = 1000.0,
     this.eveningPrice = 1200.0,
     this.weekendPrice = 1500.0,
+    this.holidayPrice = 1500.0,
     this.dayStartHour = 10,
     this.eveningStartHour = 17,
     this.updatedAt,
@@ -75,6 +79,7 @@ class SlotConfigEntity extends Equatable {
       dayPrice: 1000.0,
       eveningPrice: 1200.0,
       weekendPrice: 1500.0,
+      holidayPrice: 1500.0,
     );
   }
 
@@ -115,11 +120,12 @@ class SlotConfigEntity extends Equatable {
       weekday == DateTime.saturday || weekday == DateTime.sunday;
 
   /// Get the price for a given hour based on time period.
-  /// If [date] falls on Sat/Sun, returns the flat weekend price instead.
-  double getPriceForHour(int hour, {DateTime? date}) {
-    if (date != null && isWeekendDay(date.weekday)) {
-      return weekendPrice;
-    }
+  /// Holiday dates override all other pricing.
+  /// If [date] falls on Sat/Sun, returns the flat weekend price.
+  /// [isHoliday] — pass true when the date has been marked as a holiday.
+  double getPriceForHour(int hour, {DateTime? date, bool isHoliday = false}) {
+    if (isHoliday) return holidayPrice;
+    if (date != null && isWeekendDay(date.weekday)) return weekendPrice;
     final period = getPeriodForHour(hour);
     switch (period) {
       case SlotPeriod.morning:
@@ -158,6 +164,7 @@ class SlotConfigEntity extends Equatable {
         dayPrice,
         eveningPrice,
         weekendPrice,
+        holidayPrice,
         dayStartHour,
         eveningStartHour,
         updatedAt,

@@ -63,11 +63,22 @@ abstract class BookingRepository {
     required double dayPrice,
     required double eveningPrice,
     required double weekendPrice,
+    required double holidayPrice,
     required String updatedBy,
     int? freeGameThreshold,
     int? dayStartHour,
     int? eveningStartHour,
   });
+
+  /// Add a date as a holiday (dateKey = "YYYY-MM-DD", optional label).
+  Future<void> addHoliday(
+      String turfId, String dateKey, {String? label});
+
+  /// Remove a holiday date.
+  Future<void> removeHoliday(String turfId, String dateKey);
+
+  /// Fetch all holiday dateKeys for the turf.
+  Future<Map<String, String>> getHolidays(String turfId);
 
   /// Create a regular (recurring) booking. The booking's `turfId` MUST be set.
   Future<void> cancelRegularForDate(

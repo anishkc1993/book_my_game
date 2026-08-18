@@ -44,11 +44,16 @@ abstract class BookingRemoteDataSource {
     required double dayPrice,
     required double eveningPrice,
     required double weekendPrice,
+    required double holidayPrice,
     required String updatedBy,
     int? freeGameThreshold,
     int? dayStartHour,
     int? eveningStartHour,
   });
+
+  Future<void> addHoliday(String turfId, String dateKey, {String? label});
+  Future<void> removeHoliday(String turfId, String dateKey);
+  Future<Map<String, String>> getHolidays(String turfId);
 
   /// Cancel a regular booking for one specific date without affecting the
   /// recurring schedule. Creates a persisted CANCELLED booking doc that
@@ -815,6 +820,7 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
     required double dayPrice,
     required double eveningPrice,
     required double weekendPrice,
+    required double holidayPrice,
     required String updatedBy,
     int? freeGameThreshold,
     int? dayStartHour,
@@ -828,17 +834,63 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
         dayPrice: dayPrice,
         eveningPrice: eveningPrice,
         weekendPrice: weekendPrice,
+        holidayPrice: holidayPrice,
         updatedBy: updatedBy,
-        // Preserve any field the caller didn't pass.
         freeGameThreshold: freeGameThreshold ?? current.freeGameThreshold,
         dayStartHour: dayStartHour ?? current.dayStartHour,
         eveningStartHour: eveningStartHour ?? current.eveningStartHour,
       );
-
       await _slotConfigDoc(turfId).set(config.toFirestore());
       _cachedSlotConfig[turfId] = config;
     } catch (e) {
       throw ServerException('Failed to update slot pricing: ${e.toString()}');
+    }
+  }
+
+  DocumentReference _holidayDoc(String turfId, String dateKey) => _firestore
+      .collection(_turfsCollection)
+      .doc(turfId)
+      .collection('holidays')
+      .doc(dateKey);
+
+  @override
+  Future<void> addHoliday(String turfId, String dateKey,
+      {String? label}) async {
+    try {
+      await _holidayDoc(turfId, dateKey).set({
+        'dateKey': dateKey,
+        'label': label ?? '',
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      throw ServerException('Failed to add holiday: ${e.toString()}');
+    }
+  }
+
+  @override
+  Future<void> removeHoliday(String turfId, String dateKey) async {
+    try {
+      await _holidayDoc(turfId, dateKey).delete();
+    } catch (e) {
+      throw ServerException('Failed to remove holiday: ${e.toString()}');
+    }
+  }
+
+  @override
+  Future<Map<String, String>> getHolidays(String turfId) async {
+    try {
+      final snap = await _firestore
+          .collection(_turfsCollection)
+          .doc(turfId)
+          .collection('holidays')
+          .get();
+      return {
+        for (final d in snap.docs)
+          d.id: (d.data()['label'] as String?) ?? '',
+      };
+    } catch (e) {
+      debugPrint('❌ getHolidays: $e');
+      return {};
     }
   }
 
@@ -1092,24 +1144,29 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
     String turfId, {
     int lookbackDays = 7,
   }) async {
-    final regularsSnap = await _firestore
-        .collection(_regularBookingsCollection)
-        .where('turfId', isEqualTo: turfId)
-        .where('isActive', isEqualTo: true)
-        .get();
-    if (regularsSnap.docs.isEmpty) return 0;
-
     final now = DateTime.now();
     final lookbackStart =
         DateTime(now.year, now.month, now.day - lookbackDays);
 
-    // Fetch every booking in the window in one round trip so we can
-    // dedup in memory (avoid re-materializing the same slot).
-    final bookingsSnap = await _firestore
-        .collection(_bookingsCollection)
-        .where('turfId', isEqualTo: turfId)
-        .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(lookbackStart))
-        .get();
+    // Fan out both reads in parallel — regulars and existing bookings
+    // are independent of each other.
+    final results = await Future.wait([
+      _firestore
+          .collection(_regularBookingsCollection)
+          .where('turfId', isEqualTo: turfId)
+          .where('isActive', isEqualTo: true)
+          .get(),
+      _firestore
+          .collection(_bookingsCollection)
+          .where('turfId', isEqualTo: turfId)
+          .where('date',
+              isGreaterThanOrEqualTo: Timestamp.fromDate(lookbackStart))
+          .get(),
+    ]);
+    final regularsSnap = results[0];
+    final bookingsSnap = results[1];
+
+    if (regularsSnap.docs.isEmpty) return 0;
 
     // Group all existing materialized-regular docs by slot token so we
     // can detect and delete duplicates created by concurrent sweep runs.
@@ -1121,7 +1178,11 @@ class BookingRemoteDataSourceImpl implements BookingRemoteDataSource {
       final start = (data['startTime'] as Timestamp?)?.toDate();
       if (dateKey == null || start == null) continue;
       final token = '$dateKey@${start.hour}';
-      occupied.add(token);
+      // Only non-cancelled bookings block materialization. A cancelled
+      // booking means the slot is free — the regular should still be
+      // materialized for that day.
+      final status = data['status'] as String?;
+      if (status != 'CANCELLED') occupied.add(token);
       // Track only materialized regular docs (not manual bookings).
       if (data['isRegular'] as bool? ?? false) {
         slotDocs.putIfAbsent(token, () => []).add(doc.reference);

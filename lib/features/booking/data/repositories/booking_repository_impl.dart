@@ -97,6 +97,7 @@ class BookingRepositoryImpl implements BookingRepository {
     required double dayPrice,
     required double eveningPrice,
     required double weekendPrice,
+    required double holidayPrice,
     required String updatedBy,
     int? freeGameThreshold,
     int? dayStartHour,
@@ -108,12 +109,25 @@ class BookingRepositoryImpl implements BookingRepository {
       dayPrice: dayPrice,
       eveningPrice: eveningPrice,
       weekendPrice: weekendPrice,
+      holidayPrice: holidayPrice,
       updatedBy: updatedBy,
       freeGameThreshold: freeGameThreshold,
       dayStartHour: dayStartHour,
       eveningStartHour: eveningStartHour,
     );
   }
+
+  @override
+  Future<void> addHoliday(String turfId, String dateKey, {String? label}) =>
+      _remoteDataSource.addHoliday(turfId, dateKey, label: label);
+
+  @override
+  Future<void> removeHoliday(String turfId, String dateKey) =>
+      _remoteDataSource.removeHoliday(turfId, dateKey);
+
+  @override
+  Future<Map<String, String>> getHolidays(String turfId) =>
+      _remoteDataSource.getHolidays(turfId);
 
   @override
   Future<void> cancelRegularForDate(

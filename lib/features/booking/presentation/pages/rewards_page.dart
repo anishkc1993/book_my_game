@@ -178,334 +178,369 @@ class _RewardsPageState extends State<RewardsPage> {
 
     return Scaffold(
       body: SafeArea(
-        child: Consumer<BookingProvider>(
-          builder: (context, bp, _) {
-            final threshold = bp.freeGameThreshold;
+        // Column layout: static search bar on top (never rebuilt by Consumer),
+        // scrollable content below. This matches the leaderboard pattern exactly
+        // and prevents BookingProvider notifications from touching the TextField.
+        child: Column(
+          children: [
+            // ── Search bar — completely outside Consumer ──────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: TextField(
+                controller: _searchCtrl,
+                onChanged: (v) => setState(() => _query = v.trim()),
+                keyboardType: TextInputType.text,
+                decoration: InputDecoration(
+                  hintText: 'Search by name or number',
+                  prefixIcon: const Icon(Icons.search_rounded, size: 20),
+                  suffixIcon: _query.isEmpty
+                      ? null
+                      : IconButton(
+                          icon: const Icon(Icons.clear_rounded, size: 18),
+                          onPressed: () {
+                            _searchCtrl.clear();
+                            setState(() => _query = '');
+                          },
+                        ),
+                  filled: true,
+                  fillColor: cs.surfaceContainerLow,
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: cs.outlineVariant),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: cs.outlineVariant),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
 
-            // Build a unified list of customers from the live count map
-            // (current cycle counts) merged with the rewards collection
-            // (for totalClaimed / lastClaimedAt). Live counts are the
-            // source of truth — same rule the leaderboard uses.
-            final phones = <String>{
-              ...bp.liveCountsByPhone.keys,
-              ...bp.rewardsByPhone.values.map((r) => _normalizePhone(r.userPhone)),
-            };
+            // ── Scrollable content — inside Consumer ──────────────────────
+            Expanded(
+              child: Consumer<BookingProvider>(
+                builder: (context, bp, _) {
+                  final threshold = bp.freeGameThreshold;
 
-            String displayPhone(String norm) {
-              final r = bp.rewardsByPhone.values.firstWhere(
-                  (x) => _normalizePhone(x.userPhone) == norm,
-                  orElse: () => RewardEntity(userPhone: '+977$norm'));
-              return r.userPhone.isEmpty ? '+977$norm' : r.userPhone;
-            }
+                  final phones = <String>{
+                    ...bp.liveCountsByPhone.keys,
+                    ...bp.rewardsByPhone.values
+                        .map((r) => _normalizePhone(r.userPhone)),
+                  };
 
-            final all = phones.map((norm) {
-              final r = bp.rewardsByPhone.values.firstWhere(
-                  (x) => _normalizePhone(x.userPhone) == norm,
-                  orElse: () => const RewardEntity(userPhone: ''));
-              return _RewardView(
-                phone: displayPhone(norm),
-                normalizedPhone: norm,
-                progress: bp.liveCountsByPhone[norm] ?? 0,
-                totalClaimed: r.totalClaimed,
-                lastClaimedAt: r.lastClaimedAt,
-                excluded: r.excluded,
-              );
-            }).toList();
+                  String displayPhone(String norm) {
+                    final r = bp.rewardsByPhone.values.firstWhere(
+                        (x) => _normalizePhone(x.userPhone) == norm,
+                        orElse: () => RewardEntity(userPhone: '+977$norm'));
+                    return r.userPhone.isEmpty ? '+977$norm' : r.userPhone;
+                  }
 
-            final q = _query.toLowerCase();
-            final filtered = q.isEmpty
-                ? all
-                : all.where((r) {
-                    final name = _nameByPhone[r.normalizedPhone]
-                            ?.toLowerCase() ??
-                        '';
-                    return r.phone.contains(q) || name.contains(q);
+                  final all = phones.map((norm) {
+                    final r = bp.rewardsByPhone.values.firstWhere(
+                        (x) => _normalizePhone(x.userPhone) == norm,
+                        orElse: () => const RewardEntity(userPhone: ''));
+                    return _RewardView(
+                      phone: displayPhone(norm),
+                      normalizedPhone: norm,
+                      progress: bp.liveCountsByPhone[norm] ?? 0,
+                      totalClaimed: r.totalClaimed,
+                      lastClaimedAt: r.lastClaimedAt,
+                      excluded: r.excluded,
+                    );
                   }).toList();
 
-            // Partition: eligible first, in-progress, already-claimed,
-            // and excluded (admin-opted-out) at the bottom.
-            final eligible = filtered
-                .where((r) =>
-                    !r.excluded &&
-                    threshold > 0 &&
-                    r.progress >= threshold)
-                .toList()
-              ..sort((a, b) => b.progress.compareTo(a.progress));
-            final inProgress = filtered
-                .where((r) =>
-                    !r.excluded &&
-                    r.progress > 0 &&
-                    (threshold <= 0 || r.progress < threshold))
-                .toList()
-              ..sort((a, b) => b.progress.compareTo(a.progress));
-            final claimedOnly = filtered
-                .where((r) =>
-                    !r.excluded &&
-                    r.progress == 0 &&
-                    r.totalClaimed > 0)
-                .toList()
-              ..sort((a, b) => b.totalClaimed.compareTo(a.totalClaimed));
-            final excluded = filtered.where((r) => r.excluded).toList()
-              ..sort((a, b) =>
-                  b.progress.compareTo(a.progress));
+                  final q = _query.toLowerCase();
+                  final filtered = q.isEmpty
+                      ? all
+                      : all.where((r) {
+                          final name =
+                              _nameByPhone[r.normalizedPhone]?.toLowerCase() ??
+                                  '';
+                          return r.phone.contains(q) || name.contains(q);
+                        }).toList();
 
-            return RefreshIndicator(
-              color: AppColors.brandGreen,
-              onRefresh: bp.fetchAllRewards,
-              child: CustomScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                slivers: [
-                  // Header
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
-                      child: Row(
-                        children: [
-                          IconButton(
-                            onPressed: () => context.pop(),
-                            icon:
-                                const Icon(Icons.arrow_back_rounded, size: 26),
-                          ),
-                          const SizedBox(width: 4),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                  final eligible = filtered
+                      .where((r) =>
+                          !r.excluded &&
+                          threshold > 0 &&
+                          r.progress >= threshold)
+                      .toList()
+                    ..sort((a, b) => b.progress.compareTo(a.progress));
+                  final inProgress = filtered
+                      .where((r) =>
+                          !r.excluded &&
+                          r.progress > 0 &&
+                          (threshold <= 0 || r.progress < threshold))
+                      .toList()
+                    ..sort((a, b) => b.progress.compareTo(a.progress));
+                  final claimedOnly = filtered
+                      .where((r) =>
+                          !r.excluded &&
+                          r.progress == 0 &&
+                          r.totalClaimed > 0)
+                      .toList()
+                    ..sort((a, b) => b.totalClaimed.compareTo(a.totalClaimed));
+                  final excluded =
+                      filtered.where((r) => r.excluded).toList()
+                        ..sort((a, b) => b.progress.compareTo(a.progress));
+
+                  return RefreshIndicator(
+                    color: AppColors.brandGreen,
+                    onRefresh: bp.fetchAllRewards,
+                    child: CustomScrollView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      slivers: [
+                        // Header
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding:
+                                const EdgeInsets.fromLTRB(8, 8, 16, 0),
+                            child: Row(
                               children: [
-                                Text(
-                                  'Free games',
-                                  style: theme.textTheme.titleLarge?.copyWith(
-                                    fontWeight: FontWeight.w800,
-                                    height: 1.1,
-                                  ),
+                                IconButton(
+                                  onPressed: () => context.pop(),
+                                  icon: const Icon(
+                                      Icons.arrow_back_rounded,
+                                      size: 26),
                                 ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  threshold > 0
-                                      ? 'Reward after every $threshold games'
-                                      : 'Loyalty rewards disabled',
-                                  style: theme.textTheme.bodyMedium?.copyWith(
-                                    color: cs.onSurfaceVariant,
+                                const SizedBox(width: 4),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Free games',
+                                        style: theme.textTheme.titleLarge
+                                            ?.copyWith(
+                                          fontWeight: FontWeight.w800,
+                                          height: 1.1,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        threshold > 0
+                                            ? 'Reward after every $threshold games'
+                                            : 'Loyalty rewards disabled',
+                                        style: theme.textTheme.bodyMedium
+                                            ?.copyWith(
+                                          color: cs.onSurfaceVariant,
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
                               ],
                             ),
                           ),
-                        ],
-                      ),
-                    ),
-                  ),
+                        ),
 
-                  // Eligible-count banner (only when there are any).
-                  if (eligible.isNotEmpty)
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-                        child: Container(
-                          padding: const EdgeInsets.all(14),
-                          decoration: BoxDecoration(
-                            gradient: const LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: [
-                                Color(0xFF1F3712),
-                                Color(0xFF2C4E1A),
-                              ],
-                            ),
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: Row(
-                            children: [
-                              Container(
-                                width: 42,
-                                height: 42,
+                        // Eligible-count banner
+                        if (eligible.isNotEmpty)
+                          SliverToBoxAdapter(
+                            child: Padding(
+                              padding:
+                                  const EdgeInsets.fromLTRB(16, 14, 16, 0),
+                              child: Container(
+                                padding: const EdgeInsets.all(14),
                                 decoration: BoxDecoration(
-                                  color: AppColors.limeAccent
-                                      .withValues(alpha: 0.2),
-                                  borderRadius: BorderRadius.circular(12),
+                                  gradient: const LinearGradient(
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                    colors: [
+                                      Color(0xFF1F3712),
+                                      Color(0xFF2C4E1A),
+                                    ],
+                                  ),
+                                  borderRadius: BorderRadius.circular(16),
                                 ),
-                                alignment: Alignment.center,
-                                child: const Icon(
-                                  Icons.card_giftcard_rounded,
-                                  color: AppColors.limeAccent,
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.start,
+                                child: Row(
                                   children: [
-                                    Text(
-                                      '${eligible.length} customer${eligible.length == 1 ? '' : 's'} earned a free game',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.w800,
-                                        fontSize: 15,
+                                    Container(
+                                      width: 42,
+                                      height: 42,
+                                      decoration: BoxDecoration(
+                                        color: AppColors.limeAccent
+                                            .withValues(alpha: 0.2),
+                                        borderRadius:
+                                            BorderRadius.circular(12),
+                                      ),
+                                      alignment: Alignment.center,
+                                      child: const Icon(
+                                        Icons.card_giftcard_rounded,
+                                        color: AppColors.limeAccent,
                                       ),
                                     ),
-                                    const SizedBox(height: 2),
-                                    const Text(
-                                      'Claim resets their counter to 0',
-                                      style: TextStyle(
-                                        color: Color(0xFF9FBA8B),
-                                        fontSize: 12,
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            '${eligible.length} customer${eligible.length == 1 ? '' : 's'} earned a free game',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.w800,
+                                              fontSize: 15,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          const Text(
+                                            'Claim resets their counter to 0',
+                                            style: TextStyle(
+                                              color: Color(0xFF9FBA8B),
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                     ),
                                   ],
                                 ),
                               ),
-                            ],
+                            ),
                           ),
-                        ),
-                      ),
-                    ),
 
-                  // Search — matches leaderboard implementation exactly.
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-                      child: TextField(
-                        controller: _searchCtrl,
-                        onChanged: (v) => setState(() => _query = v.trim()),
-                        keyboardType: TextInputType.text,
-                        decoration: InputDecoration(
-                          hintText: 'Search by name or number',
-                          prefixIcon:
-                              const Icon(Icons.search_rounded, size: 20),
-                          suffixIcon: _query.isEmpty
-                              ? null
-                              : IconButton(
-                                  icon: const Icon(Icons.clear_rounded,
-                                      size: 18),
-                                  onPressed: () {
-                                    _searchCtrl.clear();
-                                    setState(() => _query = '');
-                                  },
+                        // Sections
+                        if (eligible.isNotEmpty) ...[
+                          _sectionHeader(context, 'Ready to claim',
+                              Icons.celebration_rounded,
+                              AppColors.brandGreen),
+                          SliverPadding(
+                            padding:
+                                const EdgeInsets.fromLTRB(16, 0, 16, 0),
+                            sliver: SliverList.separated(
+                              itemCount: eligible.length,
+                              separatorBuilder: (_, __) =>
+                                  const SizedBox(height: 8),
+                              itemBuilder: (_, i) => _RewardRow(
+                                view: eligible[i],
+                                customerName:
+                                    _nameFor(eligible[i].phone),
+                                threshold: threshold,
+                                canClaim: true,
+                                onClaim: () =>
+                                    _confirmClaim(bp, eligible[i]),
+                                onToggleExcluded: (v) =>
+                                    _toggleExcluded(bp, eligible[i], v),
+                                onTap: () => _showDatesSheet(context,
+                                    eligible[i],
+                                    _nameFor(eligible[i].phone)),
+                              ),
+                            ),
+                          ),
+                        ],
+
+                        if (inProgress.isNotEmpty) ...[
+                          _sectionHeader(context, 'In progress',
+                              Icons.timeline_rounded,
+                              cs.onSurfaceVariant),
+                          SliverPadding(
+                            padding:
+                                const EdgeInsets.fromLTRB(16, 0, 16, 0),
+                            sliver: SliverList.separated(
+                              itemCount: inProgress.length,
+                              separatorBuilder: (_, __) =>
+                                  const SizedBox(height: 8),
+                              itemBuilder: (_, i) => _RewardRow(
+                                view: inProgress[i],
+                                customerName:
+                                    _nameFor(inProgress[i].phone),
+                                threshold: threshold,
+                                canClaim: false,
+                                onToggleExcluded: (v) => _toggleExcluded(
+                                    bp, inProgress[i], v),
+                                onTap: () => _showDatesSheet(context,
+                                    inProgress[i],
+                                    _nameFor(inProgress[i].phone)),
+                              ),
+                            ),
+                          ),
+                        ],
+
+                        if (excluded.isNotEmpty) ...[
+                          _sectionHeader(context, 'Excluded',
+                              Icons.block_rounded, cs.error),
+                          SliverPadding(
+                            padding:
+                                const EdgeInsets.fromLTRB(16, 0, 16, 0),
+                            sliver: SliverList.separated(
+                              itemCount: excluded.length,
+                              separatorBuilder: (_, __) =>
+                                  const SizedBox(height: 8),
+                              itemBuilder: (_, i) => _RewardRow(
+                                view: excluded[i],
+                                customerName:
+                                    _nameFor(excluded[i].phone),
+                                threshold: threshold,
+                                canClaim: false,
+                                onToggleExcluded: (v) =>
+                                    _toggleExcluded(bp, excluded[i], v),
+                                onTap: () => _showDatesSheet(context,
+                                    excluded[i],
+                                    _nameFor(excluded[i].phone)),
+                              ),
+                            ),
+                          ),
+                        ],
+
+                        if (claimedOnly.isNotEmpty) ...[
+                          _sectionHeader(context, 'Already claimed',
+                              Icons.history_rounded,
+                              cs.onSurfaceVariant),
+                          SliverPadding(
+                            padding:
+                                const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                            sliver: SliverList.separated(
+                              itemCount: claimedOnly.length,
+                              separatorBuilder: (_, __) =>
+                                  const SizedBox(height: 8),
+                              itemBuilder: (_, i) => _RewardRow(
+                                view: claimedOnly[i],
+                                customerName:
+                                    _nameFor(claimedOnly[i].phone),
+                                threshold: threshold,
+                                canClaim: false,
+                                onToggleExcluded: (v) => _toggleExcluded(
+                                    bp, claimedOnly[i], v),
+                                onTap: () => _showDatesSheet(context,
+                                    claimedOnly[i],
+                                    _nameFor(claimedOnly[i].phone)),
+                              ),
+                            ),
+                          ),
+                        ],
+
+                        if (filtered.isEmpty)
+                          SliverToBoxAdapter(
+                            child: Padding(
+                              padding:
+                                  const EdgeInsets.fromLTRB(16, 40, 16, 0),
+                              child: Center(
+                                child: Text(
+                                  q.isEmpty
+                                      ? 'No reward records yet'
+                                      : 'No match for "$_query"',
+                                  style: TextStyle(
+                                      color: cs.onSurfaceVariant),
                                 ),
-                          filled: true,
-                          fillColor: cs.surfaceContainerLow,
-                          contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 0),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide(color: cs.outlineVariant),
+                              ),
+                            ),
                           ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide(color: cs.outlineVariant),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
 
-                  // Sections.
-                  if (eligible.isNotEmpty) ...[
-                    _sectionHeader(context, 'Ready to claim',
-                        Icons.celebration_rounded, AppColors.brandGreen),
-                    SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
-                      sliver: SliverList.separated(
-                        itemCount: eligible.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 8),
-                        itemBuilder: (_, i) => _RewardRow(
-                          view: eligible[i],
-                          customerName: _nameFor(eligible[i].phone),
-                          threshold: threshold,
-                          canClaim: true,
-                          onClaim: () => _confirmClaim(bp, eligible[i]),
-                          onToggleExcluded: (v) =>
-                              _toggleExcluded(bp, eligible[i], v),
-                          onTap: () => _showDatesSheet(context, eligible[i], _nameFor(eligible[i].phone)),
-                        ),
-                      ),
+                        const SliverToBoxAdapter(
+                            child: SizedBox(height: 32)),
+                      ],
                     ),
-                  ],
-
-                  if (inProgress.isNotEmpty) ...[
-                    _sectionHeader(context, 'In progress',
-                        Icons.timeline_rounded, cs.onSurfaceVariant),
-                    SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
-                      sliver: SliverList.separated(
-                        itemCount: inProgress.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 8),
-                        itemBuilder: (_, i) => _RewardRow(
-                          view: inProgress[i],
-                          customerName: _nameFor(inProgress[i].phone),
-                          threshold: threshold,
-                          canClaim: false,
-                          onToggleExcluded: (v) =>
-                              _toggleExcluded(bp, inProgress[i], v),
-                          onTap: () => _showDatesSheet(context, inProgress[i], _nameFor(inProgress[i].phone)),
-                        ),
-                      ),
-                    ),
-                  ],
-
-                  if (excluded.isNotEmpty) ...[
-                    _sectionHeader(context, 'Excluded',
-                        Icons.block_rounded, cs.error),
-                    SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
-                      sliver: SliverList.separated(
-                        itemCount: excluded.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 8),
-                        itemBuilder: (_, i) => _RewardRow(
-                          view: excluded[i],
-                          customerName: _nameFor(excluded[i].phone),
-                          threshold: threshold,
-                          canClaim: false,
-                          onToggleExcluded: (v) =>
-                              _toggleExcluded(bp, excluded[i], v),
-                          onTap: () => _showDatesSheet(context, excluded[i], _nameFor(excluded[i].phone)),
-                        ),
-                      ),
-                    ),
-                  ],
-
-                  if (claimedOnly.isNotEmpty) ...[
-                    _sectionHeader(context, 'Already claimed',
-                        Icons.history_rounded, cs.onSurfaceVariant),
-                    SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                      sliver: SliverList.separated(
-                        itemCount: claimedOnly.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 8),
-                        itemBuilder: (_, i) => _RewardRow(
-                          view: claimedOnly[i],
-                          customerName: _nameFor(claimedOnly[i].phone),
-                          threshold: threshold,
-                          canClaim: false,
-                          onToggleExcluded: (v) =>
-                              _toggleExcluded(bp, claimedOnly[i], v),
-                          onTap: () => _showDatesSheet(context, claimedOnly[i], _nameFor(claimedOnly[i].phone)),
-                        ),
-                      ),
-                    ),
-                  ],
-
-                  if (filtered.isEmpty)
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 40, 16, 0),
-                        child: Center(
-                          child: Text(
-                            q.isEmpty
-                                ? 'No reward records yet'
-                                : 'No match for "$_query"',
-                            style:
-                                TextStyle(color: cs.onSurfaceVariant),
-                          ),
-                        ),
-                      ),
-                    ),
-
-                  const SliverToBoxAdapter(child: SizedBox(height: 32)),
-                ],
+                  );
+                },
               ),
-            );
-          },
+            ),
+          ],
         ),
       ),
     );

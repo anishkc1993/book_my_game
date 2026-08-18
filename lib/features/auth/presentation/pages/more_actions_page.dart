@@ -30,6 +30,13 @@ class MoreActionsPage extends StatelessWidget {
         iconColor: const Color(0xFF2563EB),
       ),
       _MoreEntry(
+        icon: Icons.leaderboard_outlined,
+        label: 'Leaderboard',
+        subtitle: 'Top bookers · all-time rankings',
+        route: RoutePaths.leaderboard,
+        iconColor: const Color(0xFF7C3AED),
+      ),
+      _MoreEntry(
         icon: Icons.block_outlined,
         label: 'Block hours',
         subtitle: 'Enable or disable bookable time slots',

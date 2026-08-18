@@ -40,10 +40,8 @@ class _PublicSchedulePageState extends State<PublicSchedulePage> {
         '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
     final dateKeys = days.map(dateKeyOf).toList();
 
-    // Fan out ALL the reads in parallel — turf, slot config, regulars,
-    // plans, AND a single bookings query covering the whole 7-day
-    // window via `dateKey whereIn`. Drops the round-trip count from
-    // ~11 sequential to 5 parallel (≈ p95 RTT * 5 → p95 RTT * 1).
+    // Fan out ALL reads in parallel — turf, slot config, regulars,
+    // plans, bookings, and holidays.
     final results = await Future.wait([
       db.collection('turfs').doc(widget.turfId).get(),
       db
@@ -67,6 +65,11 @@ class _PublicSchedulePageState extends State<PublicSchedulePage> {
           .collection('bookings')
           .where('turfId', isEqualTo: widget.turfId)
           .where('dateKey', whereIn: dateKeys)
+          .get(),
+      db
+          .collection('turfs')
+          .doc(widget.turfId)
+          .collection('holidays')
           .get(),
     ]);
 
@@ -96,10 +99,20 @@ class _PublicSchedulePageState extends State<PublicSchedulePage> {
         (slotData['eveningPrice'] as num?)?.toDouble() ?? 1200;
     final weekendPrice =
         (slotData['weekendPrice'] as num?)?.toDouble() ?? 1500;
+    final holidayPrice =
+        (slotData['holidayPrice'] as num?)?.toDouble() ?? 1500;
     final dayStartHour =
         (slotData['dayStartHour'] as num?)?.toInt() ?? 10;
     final eveningStartHour =
         (slotData['eveningStartHour'] as num?)?.toInt() ?? 17;
+
+    // 5b) Holidays — dateKey → label map.
+    final holidaysSnap = results[5] as QuerySnapshot<Map<String, dynamic>>;
+    final holidayDateKeys = {for (final d in holidaysSnap.docs) d.id};
+    final holidayLabels = <String, String>{
+      for (final d in holidaysSnap.docs)
+        d.id: (d.data()['label'] as String?) ?? '',
+    };
 
     // 3) Regulars + plans — independent of the day loop.
     final regularsSnap =
@@ -180,12 +193,18 @@ class _PublicSchedulePageState extends State<PublicSchedulePage> {
       dayPrice: dayPrice,
       eveningPrice: eveningPrice,
       weekendPrice: weekendPrice,
+      holidayPrice: holidayPrice,
+      holidayDateKeys: holidayDateKeys,
+      holidayLabels: holidayLabels,
       dayStartHour: dayStartHour,
       eveningStartHour: eveningStartHour,
     );
   }
 
   double _priceFor(_ScheduleData data, DateTime date, int hour) {
+    final dateKey =
+        '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+    if (data.holidayDateKeys.contains(dateKey)) return data.holidayPrice;
     if (date.weekday == DateTime.saturday ||
         date.weekday == DateTime.sunday) {
       return data.weekendPrice;
@@ -321,6 +340,10 @@ class _PublicSchedulePageState extends State<PublicSchedulePage> {
                         itemBuilder: (_, i) {
                           final d = data.days[i].date;
                           final isSelected = i == _selectedDayIndex;
+                          final dateKey =
+                              '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+                          final isHoliday =
+                              data.holidayDateKeys.contains(dateKey);
                           return GestureDetector(
                             onTap: () =>
                                 setState(() => _selectedDayIndex = i),
@@ -334,9 +357,12 @@ class _PublicSchedulePageState extends State<PublicSchedulePage> {
                                     : cs.surfaceContainerLow,
                                 borderRadius: BorderRadius.circular(14),
                                 border: Border.all(
-                                  color: isSelected
-                                      ? AppColors.brandGreen
-                                      : cs.outlineVariant,
+                                  color: isHoliday && !isSelected
+                                      ? const Color(0xFFE65100)
+                                          .withValues(alpha: 0.6)
+                                      : isSelected
+                                          ? AppColors.brandGreen
+                                          : cs.outlineVariant,
                                 ),
                               ),
                               child: Column(
@@ -364,6 +390,14 @@ class _PublicSchedulePageState extends State<PublicSchedulePage> {
                                       fontSize: 11,
                                     ),
                                   ),
+                                  if (isHoliday) ...[
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      '🎉',
+                                      style: TextStyle(
+                                          fontSize: isSelected ? 12 : 11),
+                                    ),
+                                  ],
                                 ],
                               ),
                             ),
@@ -373,6 +407,57 @@ class _PublicSchedulePageState extends State<PublicSchedulePage> {
                     ),
                   ),
                 ),
+                // Holiday banner (shown when selected day is a holiday)
+                Builder(builder: (_) {
+                  final d = selectedDay.date;
+                  final dateKey =
+                      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+                  final isHoliday = data.holidayDateKeys.contains(dateKey);
+                  final label = data.holidayLabels[dateKey] ?? '';
+                  if (!isHoliday) return const SliverToBoxAdapter(child: SizedBox.shrink());
+                  return SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                              color: Colors.orange.withValues(alpha: 0.45)),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.event_rounded,
+                                size: 18, color: Colors.orange.shade700),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                label.isNotEmpty
+                                    ? 'Holiday · $label'
+                                    : 'Holiday pricing applies today',
+                                style: TextStyle(
+                                  color: Colors.orange.shade800,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ),
+                            Text(
+                              'Rs. ${data.holidayPrice.toInt()} / slot',
+                              style: TextStyle(
+                                color: Colors.orange.shade700,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }),
                 // Legend
                 SliverToBoxAdapter(
                   child: Padding(
@@ -571,6 +656,9 @@ class _ScheduleData {
   final double dayPrice;
   final double eveningPrice;
   final double weekendPrice;
+  final double holidayPrice;
+  final Set<String> holidayDateKeys;
+  final Map<String, String> holidayLabels;
   final int dayStartHour;
   final int eveningStartHour;
   _ScheduleData({
@@ -582,6 +670,9 @@ class _ScheduleData {
     required this.dayPrice,
     required this.eveningPrice,
     required this.weekendPrice,
+    required this.holidayPrice,
+    required this.holidayDateKeys,
+    required this.holidayLabels,
     required this.dayStartHour,
     required this.eveningStartHour,
   });

@@ -21,6 +21,7 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
   final _dayCtrl = TextEditingController();
   final _eveningCtrl = TextEditingController();
   final _weekendCtrl = TextEditingController();
+  final _holidayCtrl = TextEditingController();
   bool _pricingChanged = false;
   /// Editable band boundaries — initialised from the loaded config.
   int _dayStartHour = 10;
@@ -30,7 +31,8 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<BookingProvider>().fetchSlotConfig().then((_) {
+      final bp = context.read<BookingProvider>();
+      Future.wait([bp.fetchSlotConfig(), bp.fetchHolidays()]).then((_) {
         _syncControllers();
       });
     });
@@ -43,6 +45,7 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
       _dayCtrl.text = config.dayPrice.toInt().toString();
       _eveningCtrl.text = config.eveningPrice.toInt().toString();
       _weekendCtrl.text = config.weekendPrice.toInt().toString();
+      _holidayCtrl.text = config.holidayPrice.toInt().toString();
       setState(() {
         _dayStartHour = config.dayStartHour;
         _eveningStartHour = config.eveningStartHour;
@@ -56,6 +59,7 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
     _dayCtrl.dispose();
     _eveningCtrl.dispose();
     _weekendCtrl.dispose();
+    _holidayCtrl.dispose();
     super.dispose();
   }
 
@@ -64,8 +68,9 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
     final day = double.tryParse(_dayCtrl.text) ?? 0;
     final evening = double.tryParse(_eveningCtrl.text) ?? 0;
     final weekend = double.tryParse(_weekendCtrl.text) ?? 0;
+    final holiday = double.tryParse(_holidayCtrl.text) ?? 0;
 
-    if (morning <= 0 || day <= 0 || evening <= 0 || weekend <= 0) {
+    if (morning <= 0 || day <= 0 || evening <= 0 || weekend <= 0 || holiday <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please enter valid prices')),
       );
@@ -88,6 +93,7 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
           dayPrice: day,
           eveningPrice: evening,
           weekendPrice: weekend,
+          holidayPrice: holiday,
           adminId: adminId,
           dayStartHour: _dayStartHour,
           eveningStartHour: _eveningStartHour,
@@ -327,6 +333,17 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
                           onChanged: () =>
                               setState(() => _pricingChanged = true),
                         ),
+                        const SizedBox(height: 10),
+                        _PriceCard(
+                          icon: Icons.event_rounded,
+                          iconBg: Colors.orange.withValues(alpha: 0.15),
+                          iconColor: Colors.orange,
+                          title: 'Holiday',
+                          timeRange: 'Marked holiday dates · all day',
+                          controller: _holidayCtrl,
+                          onChanged: () =>
+                              setState(() => _pricingChanged = true),
+                        ),
                         const SizedBox(height: 14),
                         // Save / Pricing saved button
                         _SavePricingButton(
@@ -356,6 +373,28 @@ class _SlotManagementPageState extends State<SlotManagementPage> {
                   child: _RewardsSection(
                     config: provider.slotConfig,
                     saving: isSaving,
+                  ),
+                ),
+
+                // ── Divider ─────────────────────────────────────────────────
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 28, 20, 0),
+                    child: Divider(
+                      color: cs.outlineVariant.withValues(alpha: 0.7),
+                      height: 1,
+                      thickness: 1,
+                    ),
+                  ),
+                ),
+
+                // ── Holiday dates section ───────────────────────────────────
+                SliverToBoxAdapter(
+                  child: _HolidaySection(
+                    holidays: provider.holidays,
+                    onAdd: (dateKey, label) =>
+                        provider.addHoliday(dateKey, label: label),
+                    onRemove: (dateKey) => provider.removeHoliday(dateKey),
                   ),
                 ),
 
@@ -1159,6 +1198,262 @@ class _BoundaryDropdown extends StatelessWidget {
           },
         ),
       ],
+    );
+  }
+}
+
+// ── Holiday management section ────────────────────────────────────────────────
+
+class _HolidaySection extends StatefulWidget {
+  final Map<String, String> holidays;
+  final Future<bool> Function(String dateKey, String? label) onAdd;
+  final Future<bool> Function(String dateKey) onRemove;
+
+  const _HolidaySection({
+    required this.holidays,
+    required this.onAdd,
+    required this.onRemove,
+  });
+
+  @override
+  State<_HolidaySection> createState() => _HolidaySectionState();
+}
+
+class _HolidaySectionState extends State<_HolidaySection> {
+  final _labelCtrl = TextEditingController();
+  DateTime? _pickedDate;
+  bool _adding = false;
+
+  @override
+  void dispose() {
+    _labelCtrl.dispose();
+    super.dispose();
+  }
+
+  String _dateKey(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  String _fmtDate(String key) {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun',
+                    'Jul','Aug','Sep','Oct','Nov','Dec'];
+    final parts = key.split('-');
+    if (parts.length != 3) return key;
+    final m = int.tryParse(parts[1]);
+    return '${parts[2]} ${m != null ? months[m - 1] : parts[1]} ${parts[0]}';
+  }
+
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _pickedDate ?? DateTime.now(),
+      firstDate: DateTime(2024),
+      lastDate: DateTime(2030),
+    );
+    if (picked != null) setState(() => _pickedDate = picked);
+  }
+
+  Future<void> _add() async {
+    if (_pickedDate == null) return;
+    setState(() => _adding = true);
+    final key = _dateKey(_pickedDate!);
+    final label = _labelCtrl.text.trim().isEmpty ? null : _labelCtrl.text.trim();
+    final ok = await widget.onAdd(key, label);
+    if (mounted) {
+      setState(() {
+        _adding = false;
+        if (ok) {
+          _pickedDate = null;
+          _labelCtrl.clear();
+        }
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final sortedKeys = widget.holidays.keys.toList()..sort();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 24, 20, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header
+          Row(
+            children: [
+              Container(
+                width: 42, height: 42,
+                decoration: BoxDecoration(
+                  color: Colors.orange.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                alignment: Alignment.center,
+                child: const Icon(Icons.event_rounded,
+                    color: Colors.orange, size: 22),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Holiday dates',
+                        style: theme.textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w800)),
+                    Text('Holiday price applies on these dates',
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: cs.onSurfaceVariant)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+
+          // Add holiday row
+          Row(
+            children: [
+              Expanded(
+                child: InkWell(
+                  onTap: _pickDate,
+                  borderRadius: BorderRadius.circular(10),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 13),
+                    decoration: BoxDecoration(
+                      color: cs.surfaceContainerLow,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: cs.outlineVariant),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.calendar_today_rounded,
+                            size: 16, color: cs.onSurfaceVariant),
+                        const SizedBox(width: 8),
+                        Text(
+                          _pickedDate != null
+                              ? _fmtDate(_dateKey(_pickedDate!))
+                              : 'Pick date',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: _pickedDate != null
+                                ? cs.onSurface
+                                : cs.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  controller: _labelCtrl,
+                  style: theme.textTheme.bodyMedium
+                      ?.copyWith(color: cs.onSurface),
+                  decoration: InputDecoration(
+                    hintText: 'Label (e.g. Dashain)',
+                    hintStyle: TextStyle(color: cs.onSurfaceVariant),
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 13),
+                    filled: true,
+                    fillColor: cs.surfaceContainerLow,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide(color: cs.outlineVariant),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide(color: cs.outlineVariant),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _pickedDate != null && !_adding ? _add : null,
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.orange,
+                  minimumSize: const Size(48, 48),
+                  padding: EdgeInsets.zero,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                ),
+                child: _adding
+                    ? const SizedBox(
+                        width: 20, height: 20,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.add_rounded, color: Colors.white),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // Holiday list
+          if (sortedKeys.isEmpty)
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: cs.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: cs.outlineVariant),
+              ),
+              child: Text(
+                'No holidays marked yet. Pick a date above to add one.',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: cs.onSurfaceVariant),
+              ),
+            )
+          else
+            ...sortedKeys.map((key) {
+              final label = widget.holidays[key] ?? '';
+              return Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 14, vertical: 11),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                      color: Colors.orange.withValues(alpha: 0.4)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.event_rounded,
+                        size: 18, color: Colors.orange.shade700),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(_fmtDate(key),
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                  color: cs.onSurface)),
+                          if (label.isNotEmpty)
+                            Text(label,
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                    color: Colors.orange.shade700,
+                                    fontWeight: FontWeight.w600)),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => widget.onRemove(key),
+                      icon: Icon(Icons.delete_outline_rounded,
+                          size: 18, color: cs.onSurfaceVariant),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                          minWidth: 32, minHeight: 32),
+                    ),
+                  ],
+                ),
+              );
+            }),
+        ],
+      ),
     );
   }
 }

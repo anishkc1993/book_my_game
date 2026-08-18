@@ -54,9 +54,12 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final provider = context.read<BookingProvider>();
-      provider.fetchSlotConfig();
-      provider.selectDate(DateTime.now()); // fetches both slots + bookings
-      provider.fetchAllRewards();
+      // All three are independent — run in parallel.
+      Future.wait([
+        provider.fetchSlotConfig(),
+        provider.selectDate(DateTime.now()),
+        provider.fetchAllRewards(),
+      ]);
     });
   }
 
@@ -601,8 +604,8 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
         final startTime = DateTime(
             selectedDate.year, selectedDate.month, selectedDate.day, hour);
         final endTime = startTime.add(const Duration(hours: 1));
-        final basePrice = bookingProvider.slotConfig
-            ?.getPriceForHour(hour, date: selectedDate);
+        final basePrice =
+            bookingProvider.getPriceForHour(hour, date: selectedDate);
 
         final booking = BookingEntity(
           userId:
@@ -631,23 +634,108 @@ class _AdminBookingPageState extends State<AdminBookingPage> {
 
       if (context.mounted) {
         Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              failCount == 0
-                  ? '$successCount booking${successCount > 1 ? 's' : ''} created!'
-                  : '$successCount created, $failCount failed',
+        final phone = result['phone'] as String;
+        final name = (result['name'] as String).isNotEmpty
+            ? result['name'] as String
+            : null;
+        final hours = result['hours'] as List<int>;
+        final turfName =
+            authProvider.user?.turfName ?? 'the turf';
+
+        if (failCount == 0 && phone.isNotEmpty) {
+          // Build WhatsApp confirmation message.
+          final msg = _buildWhatsAppMessage(
+            name: name,
+            phone: phone,
+            date: bookingProvider.selectedDate,
+            hours: hours,
+            turfName: turfName,
+          );
+          final waUrl = _whatsAppUrl(phone, msg);
+
+          final messenger = ScaffoldMessenger.of(context);
+          messenger.clearSnackBars();
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(
+                '$successCount booking${successCount > 1 ? 's' : ''} created!',
+              ),
+              backgroundColor: AppColors.brandGreen,
+              behavior: SnackBarBehavior.floating,
+              margin: const EdgeInsets.all(16),
+              duration: const Duration(seconds: 3),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+              action: SnackBarAction(
+                label: 'WhatsApp',
+                textColor: Colors.white,
+                onPressed: () async {
+                  final uri = Uri.parse(waUrl);
+                  if (await canLaunchUrl(uri)) {
+                    await launchUrl(uri,
+                        mode: LaunchMode.externalApplication);
+                  }
+                },
+              ),
             ),
-            backgroundColor:
-                failCount == 0 ? AppColors.brandGreen : Colors.orange,
-            behavior: SnackBarBehavior.floating,
-            margin: const EdgeInsets.all(16),
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10)),
-          ),
-        );
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                failCount == 0
+                    ? '$successCount booking${successCount > 1 ? 's' : ''} created!'
+                    : '$successCount created, $failCount failed',
+              ),
+              backgroundColor:
+                  failCount == 0 ? AppColors.brandGreen : Colors.orange,
+              behavior: SnackBarBehavior.floating,
+              margin: const EdgeInsets.all(16),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
+          );
+        }
       }
     }
+  }
+
+  static String _buildWhatsAppMessage({
+    required String? name,
+    required String phone,
+    required DateTime date,
+    required List<int> hours,
+    required String turfName,
+  }) {
+    const days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    const months = ['Jan','Feb','Mar','Apr','May','Jun',
+                    'Jul','Aug','Sep','Oct','Nov','Dec'];
+    String fmtH(int h) {
+      if (h == 0) return '12 AM';
+      if (h < 12) return '$h AM';
+      if (h == 12) return '12 PM';
+      return '${h - 12} PM';
+    }
+    final dateStr =
+        '${days[date.weekday - 1]}, ${date.day} ${months[date.month - 1]} ${date.year}';
+    final sortedHours = [...hours]..sort();
+    final slots = sortedHours
+        .map((h) => '${fmtH(h)} – ${fmtH(h + 1)}')
+        .join(', ');
+    final greeting = name != null ? 'Hi $name! 👋\n' : 'Hi! 👋\n';
+    return '${greeting}'
+        '✅ Your booking at *$turfName* is confirmed.\n\n'
+        '📅 $dateStr\n'
+        '⏰ $slots\n\n'
+        'See you on the pitch! ⚽';
+  }
+
+  static String _whatsAppUrl(String phone, String message) {
+    // Normalize to international format without +
+    var digits = phone.replaceAll(RegExp(r'\D'), '');
+    if (digits.length == 10) digits = '977$digits';
+    final encoded = Uri.encodeComponent(message);
+    return 'https://wa.me/$digits?text=$encoded';
   }
 }
 
@@ -736,9 +824,7 @@ class _NewBookingSheetState extends State<_NewBookingSheet> {
     final date = widget.selectedDate;
     return _selectedHours.fold(0.0, (sum, h) {
       return sum +
-          (widget.bookingProvider.slotConfig
-                  ?.getPriceForHour(h, date: date) ??
-              0);
+          (widget.bookingProvider.getPriceForHour(h, date: date) ?? 0);
     });
   }
 
@@ -988,8 +1074,8 @@ class _NewBookingSheetState extends State<_NewBookingSheet> {
                         final slot = allSlots[index];
                         final hour = slot.startTime.hour;
                         final isSelected = _selectedHours.contains(hour);
-                        final price = widget.bookingProvider.slotConfig
-                            ?.getPriceForHour(hour, date: widget.selectedDate);
+                        final price = widget.bookingProvider
+                            .getPriceForHour(hour, date: widget.selectedDate);
                         return _AdminSlotCard(
                           slot: slot,
                           isSelected: isSelected,

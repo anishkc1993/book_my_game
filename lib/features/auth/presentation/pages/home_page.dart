@@ -10,6 +10,7 @@ import '../../../../core/theme/app_theme.dart';
 import '../../../../core/theme/widgets/theme_selector.dart';
 import '../../../../injection_container.dart';
 import '../../../booking/domain/entities/booking_entity.dart';
+import '../../../booking/domain/entities/reward_entity.dart';
 import '../../../booking/domain/entities/slot_config_entity.dart';
 import '../../../booking/presentation/providers/booking_provider.dart';
 
@@ -39,19 +40,37 @@ class _HomePageState extends State<HomePage> {
         context.read<BookingProvider>().fetchUserBookings(user.uid);
         if (user.isAdminOrStaff) {
           final bp = context.read<BookingProvider>();
-          bp.sweepPastBookings().then((_) {
-            bp.fetchTodayBookings();
-            if (user.isAdmin) {
-              bp.fetchAllRewards();
-              context
-                  .read<LeaderboardProvider>()
-                  .fetchLeaderboard(forceRefresh: true);
-            }
-          });
-          bp.fetchSlotConfig();
-          context.read<LeaderboardProvider>().fetchLeaderboard();
+          final lp = context.read<LeaderboardProvider>();
+          final mp = context.read<MonthlyPlanProvider>();
+
+          // ── Critical path: fast reads that power the main dashboard ──
+          // Run immediately so slot bars, booking cards, and pricing
+          // appear without waiting for any heavy operation.
+          Future.wait([
+            bp.fetchSlotConfig(),   // ~1 RTT, small doc
+            bp.fetchTodayBookings(), // ~4 parallel reads (already optimised)
+            bp.fetchHolidays(),     // ~1 RTT, small collection
+          ]);
+
+          // ── Leaderboard: needed for rewards name lookup ───────────────
+          lp.fetchLeaderboard(); // fire-and-forget
+
+          // ── Heavy ops: run in background, dashboard renders without them
+          // Sweep first (reads active bookings → writes), THEN:
+          //   • refresh today bookings (sweep may have flipped statuses)
+          //   • leaderboard force-refresh (sweep bumped completed counts)
+          // fetchAllRewards (full booking scan) runs after sweep so it
+          // doesn't compete with the critical-path reads.
           if (user.isAdmin) {
-            context.read<MonthlyPlanProvider>().fetchTodayPlanRevenue();
+            bp.sweepPastBookings().then((_) {
+              bp.fetchTodayBookings();
+              lp.fetchLeaderboard(forceRefresh: true);
+              bp.fetchAllRewards(); // full scan — runs after sweep, not before
+              mp.fetchTodayPlanRevenue();
+            });
+          } else {
+            // Staff: sweep + today only (no rewards/plan revenue)
+            bp.sweepPastBookings().then((_) => bp.fetchTodayBookings());
           }
         }
       }
@@ -162,19 +181,20 @@ class _AdminHomeState extends State<_AdminHome> {
     // Sweep first so any past confirmed bookings flip to COMPLETED before
     // the dashboard reads them. Sweep also bumps the mutation counter,
     // which auto-refreshes analytics + leaderboard via the wired listener.
-    await bp.sweepPastBookings();
+    // Critical path first (fast — dashboard visible quickly).
     await Future.wait([
       bp.fetchTodayBookings(),
       bp.fetchSlotConfig(),
-      bp.fetchAllRewards(),
-      context.read<MonthlyPlanProvider>().fetchTodayPlanRevenue(),
     ]);
     if (!mounted) return;
-    // Belt-and-braces — force a leaderboard refresh in case sweep made
-    // zero changes (then mutation counter didn't bump).
-    await context
-        .read<LeaderboardProvider>()
-        .fetchLeaderboard(forceRefresh: true);
+    // Heavy ops after the screen is already showing fresh data.
+    bp.sweepPastBookings().then((_) {
+      if (!mounted) return;
+      bp.fetchTodayBookings();
+      bp.fetchAllRewards();
+      context.read<MonthlyPlanProvider>().fetchTodayPlanRevenue();
+      context.read<LeaderboardProvider>().fetchLeaderboard(forceRefresh: true);
+    });
   }
 
   /// Open a bottom sheet offering two ways to share the customer-facing
@@ -595,7 +615,8 @@ class _AdminHomeState extends State<_AdminHome> {
                   ),
                 ),
 
-                // ── Top bookers (this month) ───────────────────────────────
+
+                // ── Rewards ───────────────────────────────────────────────
                 SliverToBoxAdapter(
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(20, 28, 20, 12),
@@ -603,15 +624,15 @@ class _AdminHomeState extends State<_AdminHome> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          'Top bookers',
+                          'Free games',
                           style: theme.textTheme.titleLarge?.copyWith(
                             fontWeight: FontWeight.w800,
                           ),
                         ),
                         GestureDetector(
-                          onTap: () => context.push(RoutePaths.leaderboard),
+                          onTap: () => context.push(RoutePaths.rewards),
                           child: Text(
-                            'View all',
+                            'See more',
                             style: theme.textTheme.bodyMedium?.copyWith(
                               color: AppColors.brandGreen,
                               fontWeight: FontWeight.w700,
@@ -625,7 +646,7 @@ class _AdminHomeState extends State<_AdminHome> {
                 SliverToBoxAdapter(
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
-                    child: _TopBookersCard(),
+                    child: _RewardsSummaryCard(),
                   ),
                 ),
 
@@ -1396,6 +1417,258 @@ class _PitchActionTile extends StatelessWidget {
     );
   }
 }
+
+// ── Rewards summary card ───────────────────────────────────────────────────────
+
+class _RewardsSummaryCard extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    return Consumer<BookingProvider>(
+      builder: (context, bp, _) {
+        final threshold = bp.freeGameThreshold;
+
+        if (!bp.rewardsEnabled) {
+          return Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: cs.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.7)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.card_giftcard_rounded,
+                    color: cs.onSurfaceVariant, size: 22),
+                const SizedBox(width: 12),
+                Text('Loyalty rewards not configured.',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: cs.onSurfaceVariant)),
+              ],
+            ),
+          );
+        }
+
+        // Name lookup from leaderboard (already loaded — free, no extra fetch).
+        final lb = context.watch<LeaderboardProvider>();
+        String _norm(String raw) {
+          var d = raw.replaceAll(RegExp(r'\D'), '');
+          if (d.length > 10) d = d.substring(d.length - 10);
+          return d;
+        }
+        final nameByNorm = <String, String>{
+          for (final e in lb.entries)
+            if (e.customerName != null && e.customerName!.isNotEmpty)
+              _norm(e.phoneNumber): e.customerName!,
+        };
+
+        // Build customer list sorted: eligible first, then by progress desc.
+        final phones = <String>{
+          ...bp.liveCountsByPhone.keys,
+          ...bp.rewardsByPhone.values
+              .map((r) => r.userPhone.replaceAll(RegExp(r'\D'), ''))
+              .where((p) => p.length >= 10)
+              .map((p) => p.length > 10 ? p.substring(p.length - 10) : p),
+        };
+
+        final customers = phones.map((norm) {
+          final progress = bp.liveCountsByPhone[norm] ?? 0;
+          final r = bp.rewardsByPhone.values.firstWhere(
+            (x) {
+              var d = x.userPhone.replaceAll(RegExp(r'\D'), '');
+              if (d.length > 10) d = d.substring(d.length - 10);
+              return d == norm;
+            },
+            orElse: () => const RewardEntity(userPhone: ''),
+          );
+          return (
+            phone: '+977$norm',
+            name: nameByNorm[norm],
+            progress: progress,
+            excluded: r.excluded,
+            totalClaimed: r.totalClaimed,
+          );
+        }).where((c) => !c.excluded).toList()
+          ..sort((a, b) {
+            final aElig = a.progress >= threshold ? 1 : 0;
+            final bElig = b.progress >= threshold ? 1 : 0;
+            if (aElig != bElig) return bElig - aElig;
+            return b.progress.compareTo(a.progress);
+          });
+
+        final eligibleCount =
+            customers.where((c) => c.progress >= threshold).length;
+        final preview = customers.take(4).toList();
+
+        return Container(
+          padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+          decoration: BoxDecoration(
+            color: cs.surfaceContainerLow,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+                color: cs.outlineVariant.withValues(alpha: 0.7)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Eligible banner
+              if (eligibleCount > 0)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: AppColors.brandGreen.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                        color: AppColors.brandGreen.withValues(alpha: 0.3)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.card_giftcard_rounded,
+                          color: AppColors.brandGreen, size: 18),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '$eligibleCount customer${eligibleCount == 1 ? '' : 's'} ready to claim a free game',
+                          style: const TextStyle(
+                            color: AppColors.brandGreen,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+              if (preview.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Text('No reward records yet.',
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: cs.onSurfaceVariant)),
+                )
+              else
+                for (int i = 0; i < preview.length; i++) ...[
+                  _RewardProgressRow(
+                    name: preview[i].name,
+                    phone: preview[i].phone,
+                    progress: preview[i].progress,
+                    threshold: threshold,
+                  ),
+                  if (i < preview.length - 1)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Divider(
+                          height: 1,
+                          color: cs.outlineVariant.withValues(alpha: 0.5)),
+                    ),
+                ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _RewardProgressRow extends StatelessWidget {
+  final String? name;
+  final String phone;
+  final int progress;
+  final int threshold;
+  const _RewardProgressRow({
+    required this.name,
+    required this.phone,
+    required this.progress,
+    required this.threshold,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final ratio = threshold > 0
+        ? (progress / threshold).clamp(0.0, 1.0)
+        : 0.0;
+    final eligible = progress >= threshold;
+    final displayName = (name != null && name!.isNotEmpty) ? name! : phone;
+
+    return Row(
+      children: [
+        Container(
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(
+            color: eligible
+                ? AppColors.brandGreen.withValues(alpha: 0.15)
+                : cs.surfaceContainerHighest,
+            shape: BoxShape.circle,
+          ),
+          alignment: Alignment.center,
+          child: Icon(
+            eligible
+                ? Icons.card_giftcard_rounded
+                : Icons.sports_soccer_rounded,
+            size: 17,
+            color:
+                eligible ? AppColors.brandGreen : cs.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                displayName,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: cs.onSurface,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (name != null && name!.isNotEmpty)
+                Text(
+                  phone,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: cs.onSurfaceVariant,
+                  ),
+                ),
+              const SizedBox(height: 4),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: ratio,
+                  minHeight: 5,
+                  backgroundColor: cs.surfaceContainerHighest,
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    eligible
+                        ? AppColors.brandGreen
+                        : cs.onSurfaceVariant.withValues(alpha: 0.5),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 10),
+        Text(
+          '$progress/$threshold',
+          style: theme.textTheme.labelSmall?.copyWith(
+            fontWeight: FontWeight.w800,
+            color: eligible ? AppColors.brandGreen : cs.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ── Top bookers card (kept for leaderboard reference) ─────────────────────────
 
 class _TopBookersCard extends StatelessWidget {
   @override

@@ -39,10 +39,7 @@ class BookingProvider extends ChangeNotifier {
     notifyListeners();
 
     if (newTurfId != null && newTurfId.isNotEmpty) {
-      // Fire-and-forget: refresh today's data and slot config for the new turf.
-      // The provider notifies listeners as each completes.
-      fetchSlotConfig();
-      fetchTodayBookings();
+      Future.wait([fetchSlotConfig(), fetchTodayBookings(), fetchHolidays()]);
     }
   }
 
@@ -209,7 +206,7 @@ class BookingProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final basePrice = _slotConfig?.getPriceForHour(
+      final basePrice = getPriceForHour(
         _selectedSlot!.startTime.hour,
         date: _selectedSlot!.startTime,
       );
@@ -299,9 +296,11 @@ class BookingProvider extends ChangeNotifier {
     if (!_hasTurf) return 0;
     final updated = await _repository.sweepPastBookings(_turfId!);
     if (updated > 0) {
-      // Refresh views that may have been affected.
-      await fetchTodayBookings();
-      if (_dateBookings.isNotEmpty) await fetchBookingsForSelectedDate();
+      // Refresh all affected views in parallel.
+      await Future.wait([
+        fetchTodayBookings(),
+        if (_dateBookings.isNotEmpty) fetchBookingsForSelectedDate(),
+      ]);
       _bumpMutation();
     }
     return updated;
@@ -509,11 +508,58 @@ class BookingProvider extends ChangeNotifier {
     }
   }
 
+  // ── Holidays ──────────────────────────────────────────────────────────────
+
+  /// Map of dateKey ("YYYY-MM-DD") → label. Loaded on demand.
+  Map<String, String> _holidays = {};
+  Map<String, String> get holidays => _holidays;
+
+  bool isHoliday(DateTime date) {
+    final key =
+        '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+    return _holidays.containsKey(key);
+  }
+
+  Future<void> fetchHolidays() async {
+    if (!_hasTurf) return;
+    try {
+      _holidays = await _repository.getHolidays(_turfId!);
+      notifyListeners();
+    } catch (e) {
+      debugPrint('fetchHolidays error: $e');
+    }
+  }
+
+  Future<bool> addHoliday(String dateKey, {String? label}) async {
+    if (!_hasTurf) return false;
+    try {
+      await _repository.addHoliday(_turfId!, dateKey, label: label);
+      _holidays = {..._holidays, dateKey: label ?? ''};
+      notifyListeners();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Future<bool> removeHoliday(String dateKey) async {
+    if (!_hasTurf) return false;
+    try {
+      await _repository.removeHoliday(_turfId!, dateKey);
+      _holidays = {..._holidays}..remove(dateKey);
+      notifyListeners();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   Future<bool> updateSlotPricing({
     required double morningPrice,
     required double dayPrice,
     required double eveningPrice,
     required double weekendPrice,
+    required double holidayPrice,
     required String adminId,
     int? dayStartHour,
     int? eveningStartHour,
@@ -530,6 +576,7 @@ class BookingProvider extends ChangeNotifier {
         dayPrice: dayPrice,
         eveningPrice: eveningPrice,
         weekendPrice: weekendPrice,
+        holidayPrice: holidayPrice,
         updatedBy: adminId,
         dayStartHour: dayStartHour,
         eveningStartHour: eveningStartHour,
@@ -541,6 +588,7 @@ class BookingProvider extends ChangeNotifier {
         dayPrice: dayPrice,
         eveningPrice: eveningPrice,
         weekendPrice: weekendPrice,
+        holidayPrice: holidayPrice,
         dayStartHour: dayStartHour ?? _slotConfig!.dayStartHour,
         eveningStartHour:
             eveningStartHour ?? _slotConfig!.eveningStartHour,
@@ -560,7 +608,8 @@ class BookingProvider extends ChangeNotifier {
   }
 
   double? getPriceForHour(int hour, {DateTime? date}) =>
-      _slotConfig?.getPriceForHour(hour, date: date);
+      _slotConfig?.getPriceForHour(hour,
+          date: date, isHoliday: date != null && isHoliday(date));
 
   /// What price to DISPLAY for a booking row.
   ///   - Paid: show `amountPaid` (historical truth — what the customer paid)
@@ -579,10 +628,7 @@ class BookingProvider extends ChangeNotifier {
         booking.isTournament) {
       return booking.basePrice;
     }
-    final live = _slotConfig?.getPriceForHour(
-      booking.startTime.hour,
-      date: booking.date,
-    );
+    final live = getPriceForHour(booking.startTime.hour, date: booking.date);
     return live ?? booking.basePrice;
   }
 
@@ -952,6 +998,28 @@ class BookingProvider extends ChangeNotifier {
     }
   }
 
+  /// Fast load — only reads reward docs (no full booking scan).
+  /// Uses stored `progressCount` from each reward doc, which is updated
+  /// by sweeps. Good enough for the dashboard preview; load time ~1 RTT.
+  Future<void> fetchRewardDocs() async {
+    if (!_hasTurf) return;
+    try {
+      final rewards = await _repository.listRewards(_turfId!);
+      _rewardsByPhone = {
+        for (final r in rewards) r.userPhone: r,
+      };
+      // Seed live counts from the stored progressCount so the dashboard
+      // renders immediately without waiting for a full booking scan.
+      _liveCounts = {
+        for (final r in rewards)
+          _normalizePhone(r.userPhone): r.progressCount,
+      };
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error fetching reward docs: $e');
+    }
+  }
+
   Future<void> fetchAllRewards() async {
     if (!_hasTurf) return;
     try {
@@ -1029,6 +1097,7 @@ class BookingProvider extends ChangeNotifier {
         dayPrice: _slotConfig!.dayPrice,
         eveningPrice: _slotConfig!.eveningPrice,
         weekendPrice: _slotConfig!.weekendPrice,
+        holidayPrice: _slotConfig!.holidayPrice,
         updatedBy: adminId,
         freeGameThreshold: threshold,
       );
@@ -1038,6 +1107,7 @@ class BookingProvider extends ChangeNotifier {
         dayPrice: _slotConfig!.dayPrice,
         eveningPrice: _slotConfig!.eveningPrice,
         weekendPrice: _slotConfig!.weekendPrice,
+        holidayPrice: _slotConfig!.holidayPrice,
         updatedAt: DateTime.now(),
         updatedBy: adminId,
         freeGameThreshold: threshold,
